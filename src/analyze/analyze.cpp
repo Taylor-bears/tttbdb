@@ -65,6 +65,8 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
                 value.set_float(static_cast<float>(value.int_val));
             } else if (col->type == TYPE_BIGINT && value.type == TYPE_INT) {
                 value.set_bigint(static_cast<int64_t>(value.int_val));
+            } else if (col->type == TYPE_DATETIME && value.type == TYPE_STRING) {
+                value.set_datetime(value.str_val);
             }
             if (value.type != col->type) {
                 throw IncompatibleTypeError(coltype2str(col->type), coltype2str(value.type));
@@ -91,6 +93,8 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
                 value.set_float(static_cast<float>(value.int_val));
             } else if (tab.cols[i].type == TYPE_BIGINT && value.type == TYPE_INT) {
                 value.set_bigint(static_cast<int64_t>(value.int_val));
+            } else if (tab.cols[i].type == TYPE_DATETIME && value.type == TYPE_STRING) {
+                value.set_datetime(value.str_val);
             }
             if (value.type != tab.cols[i].type) {
                 throw IncompatibleTypeError(coltype2str(tab.cols[i].type), coltype2str(value.type));
@@ -178,6 +182,8 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
                 cond.rhs_val.set_float(static_cast<float>(cond.rhs_val.int_val));
             } else if (lhs_type == TYPE_BIGINT && cond.rhs_val.type == TYPE_INT) {
                 cond.rhs_val.set_bigint(static_cast<int64_t>(cond.rhs_val.int_val));
+            } else if (lhs_type == TYPE_DATETIME && cond.rhs_val.type == TYPE_STRING) {
+                cond.rhs_val.set_datetime(cond.rhs_val.str_val);
             }
             rhs_type = cond.rhs_val.type;
         } else {

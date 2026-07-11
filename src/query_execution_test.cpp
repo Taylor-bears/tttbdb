@@ -237,3 +237,51 @@ TEST_F(QueryExecutionTest, BigIntInsertQueryUpdateDeleteAndBounds) {
     EXPECT_NE(std::string::npos, text.find("| -9223372036854775808 | 2 |"));
     EXPECT_NE(std::string::npos, text.find("| 7 | 233421 |"));
 }
+
+TEST_F(QueryExecutionTest, DateTimeCrudComparisonAndPersistence) {
+    execute("create table t (id int, time datetime);");
+    execute("insert into t values (1, '2023-05-18 09:12:19');");
+    execute("insert into t values (2, '2023-05-30 12:34:32');");
+    execute("select * from t;");
+    execute("delete from t where time = '2023-05-30 12:34:32';");
+    execute("update t set id = 2023 where time = '2023-05-18 09:12:19';");
+    execute("update t set time = '2024-02-29 23:59:59' where id = 2023;");
+
+    sm_manager->close_db();
+    sm_manager->open_db(DB_NAME);
+    execute("select * from t where time >= '2024-01-01 00:00:00';");
+
+    const auto &time_col = sm_manager->db_.get_table("t").cols[1];
+    EXPECT_EQ(TYPE_DATETIME, time_col.type);
+    EXPECT_EQ(sizeof(int64_t), static_cast<size_t>(time_col.len));
+
+    auto text = output();
+    EXPECT_NE(std::string::npos, text.find("| 1 | 2023-05-18 09:12:19 |"));
+    EXPECT_NE(std::string::npos, text.find("| 2 | 2023-05-30 12:34:32 |"));
+    EXPECT_NE(std::string::npos, text.find("| 2023 | 2024-02-29 23:59:59 |"));
+}
+
+TEST_F(QueryExecutionTest, DateTimeValidationAndBounds) {
+    execute("create table t (time datetime, temperature float);");
+    execute("insert into t values ('1999-07-07 12:30:00', 36.0);");
+    execute("insert into t values ('2000-02-29 00:00:00', 36.0);");
+    execute("insert into t values ('1000-01-01 00:00:00', 36.0);");
+    execute("insert into t values ('9999-12-31 23:59:59', 36.0);");
+
+    const std::vector<std::string> invalid_values = {
+        "1999-13-07 12:30:00", "1999-1-07 12:30:00", "1999-00-07 12:30:00",
+        "1999-07-00 12:30:00", "0001-07-10 12:30:00", "1999-02-30 12:30:00",
+        "1999-02-28 12:30:61", "1900-02-29 12:30:00", "1999-04-31 12:30:00",
+        "1999-07-07 24:00:00", "1999-07-07 12:60:00", "1999/07/07 12:30:00",
+        "1999-07-07T12:30:00", "10000-01-01 00:00:00", "2023-05-18 09:12:19x"};
+    for (const auto &value : invalid_values) {
+        EXPECT_TRUE(is_rejected("insert into t values ('" + value + "', 36.0);")) << value;
+    }
+    execute("select * from t;");
+
+    auto text = output();
+    EXPECT_NE(std::string::npos, text.find("| 1999-07-07 12:30:00 | 36.000000 |"));
+    EXPECT_NE(std::string::npos, text.find("| 2000-02-29 00:00:00 | 36.000000 |"));
+    EXPECT_NE(std::string::npos, text.find("| 1000-01-01 00:00:00 | 36.000000 |"));
+    EXPECT_NE(std::string::npos, text.find("| 9999-12-31 23:59:59 | 36.000000 |"));
+}
