@@ -50,6 +50,13 @@ class AbstractExecutor {
             int r = *reinterpret_cast<const int *>(rhs);
             return (l > r) - (l < r);
         }
+        if (type == TYPE_BIGINT) {
+            int64_t l;
+            int64_t r;
+            std::memcpy(&l, lhs, sizeof(l));
+            std::memcpy(&r, rhs, sizeof(r));
+            return (l > r) - (l < r);
+        }
         if (type == TYPE_FLOAT) {
             float l = *reinterpret_cast<const float *>(lhs);
             float r = *reinterpret_cast<const float *>(rhs);

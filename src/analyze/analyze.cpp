@@ -63,6 +63,8 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
             Value value = convert_sv_value(sv_set->val);
             if (col->type == TYPE_FLOAT && value.type == TYPE_INT) {
                 value.set_float(static_cast<float>(value.int_val));
+            } else if (col->type == TYPE_BIGINT && value.type == TYPE_INT) {
+                value.set_bigint(static_cast<int64_t>(value.int_val));
             }
             if (value.type != col->type) {
                 throw IncompatibleTypeError(coltype2str(col->type), coltype2str(value.type));
@@ -87,6 +89,8 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
             Value value = convert_sv_value(x->vals[i]);
             if (tab.cols[i].type == TYPE_FLOAT && value.type == TYPE_INT) {
                 value.set_float(static_cast<float>(value.int_val));
+            } else if (tab.cols[i].type == TYPE_BIGINT && value.type == TYPE_INT) {
+                value.set_bigint(static_cast<int64_t>(value.int_val));
             }
             if (value.type != tab.cols[i].type) {
                 throw IncompatibleTypeError(coltype2str(tab.cols[i].type), coltype2str(value.type));
@@ -172,6 +176,8 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
         if (cond.is_rhs_val) {
             if (lhs_type == TYPE_FLOAT && cond.rhs_val.type == TYPE_INT) {
                 cond.rhs_val.set_float(static_cast<float>(cond.rhs_val.int_val));
+            } else if (lhs_type == TYPE_BIGINT && cond.rhs_val.type == TYPE_INT) {
+                cond.rhs_val.set_bigint(static_cast<int64_t>(cond.rhs_val.int_val));
             }
             rhs_type = cond.rhs_val.type;
         } else {
@@ -193,6 +199,8 @@ Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val) {
     Value val;
     if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(sv_val)) {
         val.set_int(int_lit->val);
+    } else if (auto bigint_lit = std::dynamic_pointer_cast<ast::BigIntLit>(sv_val)) {
+        val.set_bigint(bigint_lit->val);
     } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(sv_val)) {
         val.set_float(float_lit->val);
     } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(sv_val)) {

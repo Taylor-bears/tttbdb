@@ -205,3 +205,35 @@ TEST_F(QueryExecutionTest, RejectsInvalidSqlAndPersistsMetadata) {
     execute("select * from t;");
     EXPECT_NE(std::string::npos, output().find("| 1 | Data | 90.000000 |"));
 }
+
+TEST_F(QueryExecutionTest, BigIntInsertQueryUpdateDeleteAndBounds) {
+    execute("create table t (bid bigint, sid int);");
+    execute("insert into t values (372036854775807, 233421);");
+    execute("insert into t values (-922337203685477580, 124332);");
+    execute("insert into t values (9223372036854775807, 1);");
+    execute("insert into t values (-9223372036854775808, 2);");
+    execute("select * from t;");
+
+    EXPECT_TRUE(is_rejected("insert into t values (9223372036854775809, 12345);"));
+    EXPECT_TRUE(is_rejected("insert into t values (-9223372036854775809, 12345);"));
+    EXPECT_TRUE(is_rejected("insert into t values (372036854775807, 999999999999);"));
+
+    execute("update t set bid = 7 where bid = 372036854775807;");
+    execute("delete from t where bid < -922337203685477580;");
+    execute("select * from t where bid >= -922337203685477580;");
+
+    sm_manager->close_db();
+    sm_manager->open_db(DB_NAME);
+    execute("select * from t where bid = 7;");
+
+    const auto &bid_col = sm_manager->db_.get_table("t").cols[0];
+    EXPECT_EQ(TYPE_BIGINT, bid_col.type);
+    EXPECT_EQ(sizeof(int64_t), static_cast<size_t>(bid_col.len));
+
+    auto text = output();
+    EXPECT_NE(std::string::npos, text.find("| 372036854775807 | 233421 |"));
+    EXPECT_NE(std::string::npos, text.find("| -922337203685477580 | 124332 |"));
+    EXPECT_NE(std::string::npos, text.find("| 9223372036854775807 | 1 |"));
+    EXPECT_NE(std::string::npos, text.find("| -9223372036854775808 | 2 |"));
+    EXPECT_NE(std::string::npos, text.find("| 7 | 233421 |"));
+}
