@@ -21,13 +21,15 @@ std::unordered_map<txn_id_t, Transaction *> TransactionManager::txn_map = {};
  * @param {LogManager*} log_manager 日志管理器指针
  */
 Transaction * TransactionManager::begin(Transaction* txn, LogManager* log_manager) {
-    // Todo:
-    // 1. 判断传入事务参数是否为空指针
-    // 2. 如果为空指针，创建新事务
-    // 3. 把开始事务加入到全局事务表中
-    // 4. 返回当前事务指针
-    
-    return nullptr;
+    (void)log_manager;
+    if (txn == nullptr) {
+        txn = new Transaction(next_txn_id_.fetch_add(1));
+    }
+    txn->set_start_ts(next_timestamp_.fetch_add(1));
+    txn->set_state(TransactionState::GROWING);
+    std::lock_guard<std::mutex> guard(latch_);
+    txn_map[txn->get_transaction_id()] = txn;
+    return txn;
 }
 
 /**
@@ -36,13 +38,11 @@ Transaction * TransactionManager::begin(Transaction* txn, LogManager* log_manage
  * @param {LogManager*} log_manager 日志管理器指针
  */
 void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
-    // Todo:
-    // 1. 如果存在未提交的写操作，提交所有的写操作
-    // 2. 释放所有锁
-    // 3. 释放事务相关资源，eg.锁集
-    // 4. 把事务日志刷入磁盘中
-    // 5. 更新事务状态
-
+    (void)log_manager;
+    if (txn == nullptr) return;
+    for (auto *write_record : *txn->get_write_set()) delete write_record;
+    txn->get_write_set()->clear();
+    txn->set_state(TransactionState::COMMITTED);
 }
 
 /**

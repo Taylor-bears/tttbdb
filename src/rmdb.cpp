@@ -122,7 +122,9 @@ void *client_handler(void *sock_fd) {
         bool finish_analyze = false;
         pthread_mutex_lock(buffer_mutex);
         YY_BUFFER_STATE buf = yy_scan_string(data_recv);
-        if (yyparse() == 0) {
+        ast::parse_tree = nullptr;
+        int parse_result = yyparse();
+        if (parse_result == 0) {
             if (ast::parse_tree != nullptr) {
                 try {
                     // analyze and rewrite
@@ -167,6 +169,12 @@ void *client_handler(void *sock_fd) {
                     outfile.close();
                 }
             }
+        } else {
+            const std::string failure = "failure\n";
+            std::fstream outfile("output.txt", std::ios::out | std::ios::app);
+            outfile << failure;
+            memcpy(data_send, failure.c_str(), failure.size());
+            offset = static_cast<int>(failure.size());
         }
         if(finish_analyze == false) {
             yy_delete_buffer(buf);

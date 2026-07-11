@@ -37,6 +37,7 @@ class DeleteExecutor : public AbstractExecutor {
     }
 
     std::unique_ptr<RmRecord> Next() override {
+        for (const auto &rid : rids_) fh_->delete_record(rid, context_);
         return nullptr;
     }
 

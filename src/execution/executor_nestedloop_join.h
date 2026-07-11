@@ -44,16 +44,50 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
-
+        left_->beginTuple();
+        if (left_->is_end()) {
+            isend = true;
+            return;
+        }
+        right_->beginTuple();
+        seek_next_match();
     }
 
     void nextTuple() override {
-        
+        if (isend) return;
+        right_->nextTuple();
+        seek_next_match();
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        if (isend) return nullptr;
+        auto left_rec = left_->Next();
+        auto right_rec = right_->Next();
+        auto output = std::make_unique<RmRecord>(static_cast<int>(len_));
+        memcpy(output->data, left_rec->data, left_->tupleLen());
+        memcpy(output->data + left_->tupleLen(), right_rec->data, right_->tupleLen());
+        return output;
     }
 
+    bool is_end() const override { return isend; }
+    size_t tupleLen() const override { return len_; }
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+    ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }
+    std::string getType() override { return "NestedLoopJoinExecutor"; }
+
     Rid &rid() override { return _abstract_rid; }
+
+   private:
+    void seek_next_match() {
+        while (!left_->is_end()) {
+            while (!right_->is_end()) {
+                auto record = Next();
+                if (satisfies(*record, cols_, fed_conds_)) return;
+                right_->nextTuple();
+            }
+            left_->nextTuple();
+            if (!left_->is_end()) right_->beginTuple();
+        }
+        isend = true;
+    }
 };

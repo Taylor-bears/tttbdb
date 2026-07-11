@@ -85,7 +85,36 @@ void SmManager::drop_db(const std::string& db_name) {
  * @param {string&} db_name 数据库名称，与文件夹同名
  */
 void SmManager::open_db(const std::string& db_name) {
-    
+    if (!is_dir(db_name)) throw DatabaseNotFoundError(db_name);
+    if (chdir(db_name.c_str()) < 0) throw UnixError();
+
+    std::ifstream ifs(DB_META_NAME);
+    if (!ifs.is_open()) {
+        chdir("..");
+        throw DatabaseNotFoundError(db_name);
+    }
+    db_ = DbMeta();
+    ifs >> db_;
+    if (!ifs.good() && !ifs.eof()) {
+        chdir("..");
+        throw InternalError("Invalid database metadata");
+    }
+
+    try {
+        for (auto &entry : db_.tabs_) {
+            auto &tab = entry.second;
+            fhs_[tab.name] = rm_manager_->open_file(tab.name);
+            for (auto &index : tab.indexes) {
+                auto name = ix_manager_->get_index_name(tab.name, index.cols);
+                ihs_[name] = ix_manager_->open_index(tab.name, index.cols);
+            }
+        }
+    } catch (...) {
+        for (auto &entry : fhs_) rm_manager_->close_file(entry.second.get());
+        fhs_.clear();
+        chdir("..");
+        throw;
+    }
 }
 
 /**
@@ -101,7 +130,13 @@ void SmManager::flush_meta() {
  * @description: 关闭数据库并把数据落盘
  */
 void SmManager::close_db() {
-    
+    flush_meta();
+    for (auto &entry : ihs_) ix_manager_->close_index(entry.second.get());
+    ihs_.clear();
+    for (auto &entry : fhs_) rm_manager_->close_file(entry.second.get());
+    fhs_.clear();
+    db_ = DbMeta();
+    if (chdir("..") < 0) throw UnixError();
 }
 
 /**
@@ -155,14 +190,18 @@ void SmManager::desc_table(const std::string& tab_name, Context* context) {
  * @param {Context*} context 
  */
 void SmManager::create_table(const std::string& tab_name, const std::vector<ColDef>& col_defs, Context* context) {
+    (void)context;
     if (db_.is_table(tab_name)) {
         throw TableExistsError(tab_name);
     }
+    if (col_defs.empty()) throw InternalError("Table must contain at least one column");
     // Create table meta
     int curr_offset = 0;
     TabMeta tab;
     tab.name = tab_name;
     for (auto &col_def : col_defs) {
+        if (tab.is_col(col_def.name)) throw InternalError("Duplicate column: " + col_def.name);
+        if (col_def.len <= 0) throw InvalidColLengthError(col_def.len);
         ColMeta col = {.tab_name = tab_name,
                        .name = col_def.name,
                        .type = col_def.type,
@@ -188,7 +227,25 @@ void SmManager::create_table(const std::string& tab_name, const std::vector<ColD
  * @param {Context*} context
  */
 void SmManager::drop_table(const std::string& tab_name, Context* context) {
-    
+    (void)context;
+    TabMeta &tab = db_.get_table(tab_name);
+    for (auto &index : tab.indexes) {
+        auto name = ix_manager_->get_index_name(tab_name, index.cols);
+        auto ih = ihs_.find(name);
+        if (ih != ihs_.end()) {
+            ix_manager_->close_index(ih->second.get());
+            ihs_.erase(ih);
+        }
+        ix_manager_->destroy_index(tab_name, index.cols);
+    }
+    auto fh = fhs_.find(tab_name);
+    if (fh != fhs_.end()) {
+        rm_manager_->close_file(fh->second.get());
+        fhs_.erase(fh);
+    }
+    rm_manager_->destroy_file(tab_name);
+    db_.tabs_.erase(tab_name);
+    flush_meta();
 }
 
 /**
