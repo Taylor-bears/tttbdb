@@ -1,0 +1,55 @@
+# CMake build outputs
+/build/
+/cmake-build-*/
+/rmdb_client/build/
+
+# Compiled files
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.exe
+
+# Runtime database artifacts
+*.log
+*.meta
+output.txt
+*Test_db/
+/output/
+
+# Course handouts and local notes are not part of the source repository
+/AAALOOK/
+/*.pdf
+/*.jpg
+
+# Unused files from the vendored GoogleTest distribution
+/deps/googletest/.github/
+/deps/googletest/ci/
+/deps/googletest/docs/
+/deps/googletest/googlemock/
+/deps/googletest/googletest/docs/
+/deps/googletest/googletest/samples/
+/deps/googletest/googletest/test/
+/deps/googletest/googletest/googletest/
+/deps/googletest/install_manifest.txt
+/deps/googletest/.clang-format
+/deps/googletest/.gitignore
+/deps/googletest/BUILD.bazel
+/deps/googletest/CONTRIBUTING.md
+/deps/googletest/CONTRIBUTORS
+/deps/googletest/README.md
+/deps/googletest/WORKSPACE
+/deps/googletest/googletest/README.md
+
+# Superseded parser generator outputs and merge backups
+/src/parser/*.c
+/src/parser/*~origin_master
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+._*
+*~
