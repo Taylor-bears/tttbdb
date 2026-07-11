@@ -49,21 +49,33 @@ class InsertExecutor : public AbstractExecutor {
             val.init_raw(col.len);
             memcpy(rec.data + col.offset, val.raw->data, col.len);
         }
+        std::vector<std::vector<char>> index_keys;
+        std::vector<IxIndexHandle *> index_handles;
+        for (const auto &index : tab_.indexes) {
+            std::vector<char> key(index.col_tot_len);
+            int offset = 0;
+            for (const auto &col : index.cols) {
+                memcpy(key.data() + offset, rec.data + col.offset, col.len);
+                offset += col.len;
+            }
+            auto name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols);
+            auto handle = sm_manager_->ihs_.at(name).get();
+            std::vector<Rid> existing;
+            if (handle->get_value(key.data(), &existing, context_->txn_)) throw InternalError("Duplicate index key");
+            index_keys.push_back(std::move(key));
+            index_handles.push_back(handle);
+        }
         // Insert into record file
         rid_ = fh_->insert_record(rec.data, context_);
-        
-        // Insert into index
-        for(size_t i = 0; i < tab_.indexes.size(); ++i) {
-            auto& index = tab_.indexes[i];
-            auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-            char* key = new char[index.col_tot_len];
-            int offset = 0;
-            for(size_t i = 0; i < index.col_num; ++i) {
-                memcpy(key + offset, rec.data + index.cols[i].offset, index.cols[i].len);
-                offset += index.cols[i].len;
+        size_t inserted = 0;
+        try {
+            for (; inserted < index_handles.size(); ++inserted) {
+                index_handles[inserted]->insert_entry(index_keys[inserted].data(), rid_, context_->txn_);
             }
-            ih->insert_entry(key, rid_, context_->txn_);
-            delete[] key;
+        } catch (...) {
+            for (size_t i = 0; i < inserted; ++i) index_handles[i]->delete_entry(index_keys[i].data(), context_->txn_);
+            fh_->delete_record(rid_, context_);
+            throw;
         }
         return nullptr;
     }

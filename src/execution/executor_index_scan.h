@@ -10,6 +10,8 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <limits>
+
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -31,6 +33,12 @@ class IndexScanExecutor : public AbstractExecutor {
 
     Rid rid_;
     std::unique_ptr<RecScan> scan_;
+    IxIndexHandle *ih_;
+    std::vector<char> lower_key_;
+    std::vector<char> upper_key_;
+    bool lower_strict_{false};
+    bool upper_inclusive_{true};
+    bool empty_range_{false};
 
     SmManager *sm_manager_;
 
@@ -45,6 +53,8 @@ class IndexScanExecutor : public AbstractExecutor {
         // index_no_ = index_no;
         index_col_names_ = index_col_names; 
         index_meta_ = *(tab_.get_index_meta(index_col_names_));
+        auto index_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index_meta_.cols);
+        ih_ = sm_manager_->ihs_.at(index_name).get();
         fh_ = sm_manager_->fhs_.at(tab_name_).get();
         cols_ = tab_.cols;
         len_ = cols_.back().offset + cols_.back().len;
@@ -62,19 +72,140 @@ class IndexScanExecutor : public AbstractExecutor {
             }
         }
         fed_conds_ = conds_;
+        build_bounds();
     }
 
     void beginTuple() override {
-        
+        if (empty_range_) {
+            Iid end = ih_->leaf_end();
+            scan_ = std::make_unique<IxScan>(ih_, end, end, sm_manager_->get_bpm());
+            return;
+        }
+        Iid lower = lower_strict_ ? ih_->upper_bound(lower_key_.data()) : ih_->lower_bound(lower_key_.data());
+        Iid upper = upper_inclusive_ ? ih_->upper_bound(upper_key_.data()) : ih_->lower_bound(upper_key_.data());
+        scan_ = std::make_unique<IxScan>(ih_, lower, upper, sm_manager_->get_bpm());
+        seek_next_match();
     }
 
     void nextTuple() override {
-        
+        if (scan_ == nullptr || scan_->is_end()) return;
+        scan_->next();
+        seek_next_match();
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        if (is_end()) return nullptr;
+        return fh_->get_record(rid_, context_);
     }
 
+    bool is_end() const override { return scan_ == nullptr || scan_->is_end(); }
+    size_t tupleLen() const override { return len_; }
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+    ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }
+    std::string getType() override { return "IndexScanExecutor"; }
+
     Rid &rid() override { return rid_; }
+
+   private:
+    static void fill_extreme(char *dest, const ColMeta &col, bool maximum) {
+        if (col.type == TYPE_INT) {
+            int value = maximum ? std::numeric_limits<int>::max() : std::numeric_limits<int>::min();
+            memcpy(dest, &value, sizeof(value));
+        } else if (col.type == TYPE_FLOAT) {
+            float value = maximum ? std::numeric_limits<float>::infinity() : -std::numeric_limits<float>::infinity();
+            memcpy(dest, &value, sizeof(value));
+        } else if (col.type == TYPE_BIGINT || col.type == TYPE_DATETIME) {
+            int64_t value = maximum ? std::numeric_limits<int64_t>::max() : std::numeric_limits<int64_t>::min();
+            memcpy(dest, &value, sizeof(value));
+        } else {
+            memset(dest, maximum ? 0xff : 0x00, col.len);
+        }
+    }
+
+    void build_bounds() {
+        lower_key_.resize(index_meta_.col_tot_len);
+        upper_key_.resize(index_meta_.col_tot_len);
+        int offset = 0;
+        for (const auto &col : index_meta_.cols) {
+            fill_extreme(lower_key_.data() + offset, col, false);
+            fill_extreme(upper_key_.data() + offset, col, true);
+            offset += col.len;
+        }
+
+        offset = 0;
+        for (size_t i = 0; i < index_meta_.cols.size(); ++i) {
+            const auto &col = index_meta_.cols[i];
+            const Condition *equal = nullptr;
+            for (const auto &cond : conds_) {
+                if (cond.is_rhs_val && cond.lhs_col.tab_name == tab_name_ && cond.lhs_col.col_name == col.name &&
+                    cond.op == OP_EQ) {
+                    equal = &cond;
+                    break;
+                }
+            }
+            if (equal != nullptr) {
+                memcpy(lower_key_.data() + offset, equal->rhs_val.raw->data, col.len);
+                memcpy(upper_key_.data() + offset, equal->rhs_val.raw->data, col.len);
+                offset += col.len;
+                continue;
+            }
+
+            const Condition *lower = nullptr;
+            const Condition *upper = nullptr;
+            for (const auto &cond : conds_) {
+                if (!cond.is_rhs_val || cond.lhs_col.tab_name != tab_name_ || cond.lhs_col.col_name != col.name) continue;
+                if (cond.op == OP_GT || cond.op == OP_GE) {
+                    int cmp = lower == nullptr ? 1 : compare_field(cond.rhs_val.raw->data, col.len,
+                        lower->rhs_val.raw->data, col.len, col.type);
+                    if (lower == nullptr || cmp > 0 || (cmp == 0 && cond.op == OP_GT && lower->op == OP_GE)) lower = &cond;
+                } else if (cond.op == OP_LT || cond.op == OP_LE) {
+                    int cmp = upper == nullptr ? -1 : compare_field(cond.rhs_val.raw->data, col.len,
+                        upper->rhs_val.raw->data, col.len, col.type);
+                    if (upper == nullptr || cmp < 0 || (cmp == 0 && cond.op == OP_LT && upper->op == OP_LE)) upper = &cond;
+                }
+            }
+            if (lower != nullptr) {
+                memcpy(lower_key_.data() + offset, lower->rhs_val.raw->data, col.len);
+                lower_strict_ = lower->op == OP_GT;
+                int trailing = offset + col.len;
+                if (lower_strict_) {
+                    for (size_t j = i + 1; j < index_meta_.cols.size(); ++j) {
+                        fill_extreme(lower_key_.data() + trailing, index_meta_.cols[j], true);
+                        trailing += index_meta_.cols[j].len;
+                    }
+                }
+            }
+            if (upper != nullptr) {
+                memcpy(upper_key_.data() + offset, upper->rhs_val.raw->data, col.len);
+                upper_inclusive_ = upper->op == OP_LE;
+                int trailing = offset + col.len;
+                if (!upper_inclusive_) {
+                    for (size_t j = i + 1; j < index_meta_.cols.size(); ++j) {
+                        fill_extreme(upper_key_.data() + trailing, index_meta_.cols[j], false);
+                        trailing += index_meta_.cols[j].len;
+                    }
+                }
+            }
+            break;
+        }
+        int cmp = 0;
+        int compare_offset = 0;
+        for (const auto &col : index_meta_.cols) {
+            cmp = compare_field(lower_key_.data() + compare_offset, col.len,
+                                upper_key_.data() + compare_offset, col.len, col.type);
+            if (cmp != 0) break;
+            compare_offset += col.len;
+        }
+        empty_range_ = cmp > 0 || (cmp == 0 && (lower_strict_ || !upper_inclusive_));
+    }
+
+    void seek_next_match() {
+        while (!scan_->is_end()) {
+            rid_ = scan_->rid();
+            auto record = fh_->get_record(rid_, context_);
+            if (satisfies(*record, cols_, fed_conds_)) return;
+            scan_->next();
+        }
+        rid_ = {RM_NO_PAGE, -1};
+    }
 };

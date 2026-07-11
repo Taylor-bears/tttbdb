@@ -26,13 +26,31 @@ See the Mulan PSL v2 for more details. */
 // 目前的索引匹配规则为：完全匹配索引字段，且全部为单点查询，不会自动调整where条件的顺序
 bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_conds, std::vector<std::string>& index_col_names) {
     index_col_names.clear();
-    for(auto& cond: curr_conds) {
-        if(cond.is_rhs_val && cond.op == OP_EQ && cond.lhs_col.tab_name.compare(tab_name) == 0)
-            index_col_names.push_back(cond.lhs_col.col_name);
-    }
     TabMeta& tab = sm_manager_->db_.get_table(tab_name);
-    if(tab.is_index(index_col_names)) return true;
-    return false;
+    size_t best_prefix = 0;
+    for (const auto &index : tab.indexes) {
+        size_t prefix = 0;
+        for (const auto &col : index.cols) {
+            bool has_usable = false;
+            bool has_equal = false;
+            for (const auto &cond : curr_conds) {
+                if (cond.is_rhs_val && cond.lhs_col.tab_name == tab_name &&
+                    cond.lhs_col.col_name == col.name && cond.op != OP_NE) {
+                    has_usable = true;
+                    if (cond.op == OP_EQ) has_equal = true;
+                }
+            }
+            if (!has_usable) break;
+            ++prefix;
+            if (!has_equal) break;
+        }
+        if (prefix > best_prefix) {
+            best_prefix = prefix;
+            index_col_names.clear();
+            for (const auto &col : index.cols) index_col_names.push_back(col.name);
+        }
+    }
+    return best_prefix > 0;
 }
 
 /**

@@ -14,6 +14,7 @@ See the Mulan PSL v2 for more details. */
 #include <unistd.h>
 
 #include <fstream>
+#include <set>
 
 #include "index/ix.h"
 #include "record/rm.h"
@@ -160,6 +161,23 @@ void SmManager::show_tables(Context* context) {
     outfile.close();
 }
 
+void SmManager::show_index(const std::string& tab_name, Context* context) {
+    TabMeta &tab = db_.get_table(tab_name);
+    std::fstream outfile("output.txt", std::ios::out | std::ios::app);
+    RecordPrinter printer(3);
+    for (const auto &index : tab.indexes) {
+        std::string columns = "(";
+        for (size_t i = 0; i < index.cols.size(); ++i) {
+            if (i > 0) columns += ',';
+            columns += index.cols[i].name;
+        }
+        columns += ')';
+        std::vector<std::string> row{tab_name, "unique", columns};
+        printer.print_record(row, context);
+        outfile << "| " << tab_name << " | unique | " << columns << " |\n";
+    }
+}
+
 /**
  * @description: 显示表的元数据
  * @param {string&} tab_name 表名称
@@ -255,7 +273,43 @@ void SmManager::drop_table(const std::string& tab_name, Context* context) {
  * @param {Context*} context
  */
 void SmManager::create_index(const std::string& tab_name, const std::vector<std::string>& col_names, Context* context) {
-    
+    TabMeta &tab = db_.get_table(tab_name);
+    if (col_names.empty()) throw InternalError("Index must contain at least one column");
+    if (tab.is_index(col_names)) throw IndexExistsError(tab_name, col_names);
+    std::vector<ColMeta> cols;
+    std::set<std::string> unique_names;
+    for (const auto &name : col_names) {
+        if (!unique_names.insert(name).second) throw InternalError("Duplicate index column: " + name);
+        cols.push_back(*tab.get_col(name));
+    }
+
+    ix_manager_->create_index(tab_name, cols);
+    auto index_handle = ix_manager_->open_index(tab_name, cols);
+    try {
+        auto fh = fhs_.at(tab_name).get();
+        for (RmScan scan(fh); !scan.is_end(); scan.next()) {
+            auto record = fh->get_record(scan.rid(), context);
+            std::vector<char> key;
+            for (const auto &col : cols) {
+                key.insert(key.end(), record->data + col.offset, record->data + col.offset + col.len);
+            }
+            index_handle->insert_entry(key.data(), scan.rid(), context == nullptr ? nullptr : context->txn_);
+        }
+    } catch (...) {
+        ix_manager_->close_index(index_handle.get());
+        ix_manager_->destroy_index(tab_name, cols);
+        throw;
+    }
+
+    IndexMeta index_meta{tab_name, 0, static_cast<int>(cols.size()), cols};
+    for (const auto &col : cols) index_meta.col_tot_len += col.len;
+    tab.indexes.push_back(index_meta);
+    for (auto &col : tab.cols) {
+        if (unique_names.count(col.name)) col.index = true;
+    }
+    auto index_name = ix_manager_->get_index_name(tab_name, cols);
+    ihs_[index_name] = std::move(index_handle);
+    flush_meta();
 }
 
 /**
@@ -265,7 +319,27 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
  * @param {Context*} context
  */
 void SmManager::drop_index(const std::string& tab_name, const std::vector<std::string>& col_names, Context* context) {
-    
+    (void)context;
+    TabMeta &tab = db_.get_table(tab_name);
+    auto index_it = tab.get_index_meta(col_names);
+    auto index_name = ix_manager_->get_index_name(tab_name, index_it->cols);
+    auto handle_it = ihs_.find(index_name);
+    if (handle_it != ihs_.end()) {
+        ix_manager_->close_index(handle_it->second.get());
+        ihs_.erase(handle_it);
+    }
+    ix_manager_->destroy_index(tab_name, index_it->cols);
+    tab.indexes.erase(index_it);
+    for (auto &col : tab.cols) {
+        col.index = false;
+        for (const auto &index : tab.indexes) {
+            if (std::any_of(index.cols.begin(), index.cols.end(), [&](const ColMeta &item) { return item.name == col.name; })) {
+                col.index = true;
+                break;
+            }
+        }
+    }
+    flush_meta();
 }
 
 /**
@@ -275,5 +349,7 @@ void SmManager::drop_index(const std::string& tab_name, const std::vector<std::s
  * @param {Context*} context
  */
 void SmManager::drop_index(const std::string& tab_name, const std::vector<ColMeta>& cols, Context* context) {
-    
+    std::vector<std::string> names;
+    for (const auto &col : cols) names.push_back(col.name);
+    drop_index(tab_name, names, context);
 }

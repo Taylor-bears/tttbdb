@@ -1,5 +1,6 @@
 #include <filesystem>
 #include <fstream>
+#include <chrono>
 #include <memory>
 #include <string>
 
@@ -70,6 +71,7 @@ class QueryExecutionTest : public ::testing::Test {
     }
 
     void execute(const std::string &sql) {
+        SCOPED_TRACE(sql);
         memset(data_send, 0, sizeof(data_send));
         offset = 0;
         YY_BUFFER_STATE buffer = yy_scan_string(sql.c_str());
@@ -101,6 +103,40 @@ class QueryExecutionTest : public ::testing::Test {
         }
         yy_delete_buffer(buffer);
         return false;
+    }
+
+    PlanTag scan_tag(const std::string &sql) {
+        ast::parse_tree = nullptr;
+        YY_BUFFER_STATE buffer = yy_scan_string(sql.c_str());
+        if (yyparse() != 0 || ast::parse_tree == nullptr) {
+            yy_delete_buffer(buffer);
+            throw std::runtime_error("Unable to parse scan test SQL");
+        }
+        auto query = analyze->do_analyze(ast::parse_tree);
+        auto plan = optimizer->plan_query(query, context.get());
+        yy_delete_buffer(buffer);
+        auto dml = std::dynamic_pointer_cast<DMLPlan>(plan);
+        auto projection = std::dynamic_pointer_cast<ProjectionPlan>(dml->subplan_);
+        auto scan = std::dynamic_pointer_cast<ScanPlan>(projection->subplan_);
+        return scan->tag;
+    }
+
+    size_t consume_select(const std::string &sql) {
+        ast::parse_tree = nullptr;
+        YY_BUFFER_STATE buffer = yy_scan_string(sql.c_str());
+        if (yyparse() != 0 || ast::parse_tree == nullptr) {
+            yy_delete_buffer(buffer);
+            throw std::runtime_error("Unable to parse performance SQL");
+        }
+        auto query = analyze->do_analyze(ast::parse_tree);
+        auto plan = optimizer->plan_query(query, context.get());
+        yy_delete_buffer(buffer);
+        auto stmt = portal->start(plan, context.get());
+        size_t count = 0;
+        for (stmt->root->beginTuple(); !stmt->root->is_end(); stmt->root->nextTuple()) {
+            if (stmt->root->Next() != nullptr) ++count;
+        }
+        return count;
     }
 
     std::string output() {
@@ -284,4 +320,116 @@ TEST_F(QueryExecutionTest, DateTimeValidationAndBounds) {
     EXPECT_NE(std::string::npos, text.find("| 2000-02-29 00:00:00 | 36.000000 |"));
     EXPECT_NE(std::string::npos, text.find("| 1000-01-01 00:00:00 | 36.000000 |"));
     EXPECT_NE(std::string::npos, text.find("| 9999-12-31 23:59:59 | 36.000000 |"));
+}
+
+TEST_F(QueryExecutionTest, UniqueIndexCreateQueryAndMaintenance) {
+    execute("create table warehouse (w_id int, name char(8));");
+    execute("insert into warehouse values (10, 'qweruiop');");
+    execute("insert into warehouse values (534, 'asdfhjkl');");
+    execute("insert into warehouse values (100, 'qwerghjk');");
+    execute("insert into warehouse values (500, 'bgtyhnmj');");
+    EXPECT_EQ(T_SeqScan, scan_tag("select * from warehouse where w_id = 10;"));
+    execute("create index warehouse (w_id);");
+    EXPECT_EQ(T_IndexScan, scan_tag("select * from warehouse where w_id = 10;"));
+    EXPECT_EQ(T_IndexScan, scan_tag("select * from warehouse where w_id > 100;"));
+    execute("show index from warehouse;");
+    execute("select * from warehouse where w_id = 10;");
+    execute("select * from warehouse where w_id < 534 and w_id > 100;");
+    execute("select * from warehouse where w_id > 600 and w_id < 100;");
+
+    EXPECT_TRUE(is_rejected("insert into warehouse values (10, 'duplicate');"));
+    EXPECT_TRUE(is_rejected("update warehouse set w_id = 10 where w_id = 534;"));
+    EXPECT_TRUE(is_rejected("update warehouse set w_id = 42 where w_id > 0;"));
+    execute("select * from warehouse where w_id = 10;");
+    execute("insert into warehouse values (507, 'lastdanc');");
+    execute("update warehouse set w_id = 508 where w_id = 507;");
+    execute("delete from warehouse where w_id = 500;");
+    execute("select * from warehouse where w_id > 100 and w_id < 534;");
+
+    execute("drop index warehouse (w_id);");
+    execute("create index warehouse (w_id, name);");
+    execute("show index from warehouse;");
+    execute("select * from warehouse where name = 'qwerghjk' and w_id = 100;");
+    execute("select * from warehouse where w_id < 600 and name > 'bztyhnmj';");
+    EXPECT_TRUE(is_rejected("insert into warehouse values (100, 'qwerghjk');"));
+
+    sm_manager->close_db();
+    sm_manager->open_db(DB_NAME);
+    execute("select * from warehouse where w_id = 508;");
+
+    auto text = output();
+    EXPECT_NE(std::string::npos, text.find("| warehouse | unique | (w_id) |"));
+    EXPECT_NE(std::string::npos, text.find("| warehouse | unique | (w_id,name) |"));
+    EXPECT_NE(std::string::npos, text.find("| 10 | qweruiop |"));
+    EXPECT_NE(std::string::npos, text.find("| 100 | qwerghjk |"));
+    EXPECT_NE(std::string::npos, text.find("| 508 | lastdanc |"));
+}
+
+TEST_F(QueryExecutionTest, IndexDdlAndDuplicateBuildValidation) {
+    execute("create table ddl_test (id int, name char(4));");
+    execute("insert into ddl_test values (1, 'aaaa');");
+    execute("insert into ddl_test values (1, 'bbbb');");
+    EXPECT_TRUE(is_rejected("create index ddl_test (id);"));
+    EXPECT_TRUE(sm_manager->db_.get_table("ddl_test").indexes.empty());
+
+    execute("create index ddl_test (id, name);");
+    execute("create index ddl_test (name);");
+    EXPECT_TRUE(is_rejected("create index ddl_test (name);"));
+    execute("show index from ddl_test;");
+    EXPECT_EQ(T_IndexScan, scan_tag("select * from ddl_test where id = 1;"));
+    execute("select * from ddl_test where id = 1;");
+    execute("drop index ddl_test (id, name);");
+    execute("drop index ddl_test (name);");
+    EXPECT_TRUE(is_rejected("drop index ddl_test (name);"));
+    EXPECT_TRUE(sm_manager->db_.get_table("ddl_test").indexes.empty());
+
+    auto text = output();
+    EXPECT_NE(std::string::npos, text.find("| ddl_test | unique | (id,name) |"));
+    EXPECT_NE(std::string::npos, text.find("| ddl_test | unique | (name) |"));
+    EXPECT_NE(std::string::npos, text.find("| 1 | aaaa |"));
+    EXPECT_NE(std::string::npos, text.find("| 1 | bbbb |"));
+}
+
+TEST_F(QueryExecutionTest, UniqueIndexSplitAndRangeStress) {
+    execute("create table items (id int, payload int);");
+    for (int i = 0; i < 400; ++i) {
+        execute("insert into items values (" + std::to_string(i) + ", " + std::to_string(i * 2) + ");");
+    }
+    execute("create index items (id);");
+    for (int i = 400; i < 800; ++i) {
+        execute("insert into items values (" + std::to_string(i) + ", " + std::to_string(i * 2) + ");");
+    }
+    execute("select * from items where id >= 390 and id < 395;");
+    execute("update items set id = 900 where id = 799;");
+    execute("delete from items where id = 10;");
+    EXPECT_TRUE(is_rejected("insert into items values (900, 1);"));
+    execute("select * from items where id > 895 and id <= 900;");
+
+    sm_manager->close_db();
+    sm_manager->open_db(DB_NAME);
+    execute("select * from items where id = 900;");
+
+    auto text = output();
+    for (int i = 390; i < 395; ++i) {
+        EXPECT_NE(std::string::npos, text.find("| " + std::to_string(i) + " | " + std::to_string(i * 2) + " |"));
+    }
+    EXPECT_NE(std::string::npos, text.find("| 900 | 1598 |"));
+}
+
+TEST_F(QueryExecutionTest, IndexPointLookupIsActuallyFaster) {
+    execute("create table perf (id int, payload int);");
+    for (int i = 0; i < 5000; ++i) {
+        execute("insert into perf values (" + std::to_string(i) + ", " + std::to_string(i) + ");");
+    }
+    const std::string sql = "select * from perf where id = 4321;";
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 100; ++i) EXPECT_EQ(1U, consume_select(sql));
+    auto sequential_time = std::chrono::steady_clock::now() - start;
+
+    execute("create index perf (id);");
+    start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 100; ++i) EXPECT_EQ(1U, consume_select(sql));
+    auto index_time = std::chrono::steady_clock::now() - start;
+
+    EXPECT_LT(index_time, sequential_time * 7 / 10);
 }

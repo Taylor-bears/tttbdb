@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include <set>
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -38,14 +39,77 @@ class UpdateExecutor : public AbstractExecutor {
         context_ = context;
     }
     std::unique_ptr<RmRecord> Next() override {
+        struct IndexChange {
+            IxIndexHandle *handle;
+            std::vector<char> old_key;
+            std::vector<char> new_key;
+            bool changed;
+        };
+        struct PendingUpdate {
+            Rid rid;
+            std::unique_ptr<RmRecord> record;
+            std::vector<IndexChange> changes;
+        };
+        std::vector<PendingUpdate> pending;
+        std::vector<std::set<std::string>> final_keys(tab_.indexes.size());
+
         for (const auto &rid : rids_) {
-            auto record = fh_->get_record(rid, context_);
+            auto old_record = fh_->get_record(rid, context_);
+            auto record = std::make_unique<RmRecord>(*old_record);
             for (const auto &set_clause : set_clauses_) {
                 auto col = tab_.get_col(set_clause.lhs.col_name);
                 if (set_clause.rhs.raw == nullptr) throw InternalError("SET value is not initialized");
                 memcpy(record->data + col->offset, set_clause.rhs.raw->data, col->len);
             }
-            fh_->update_record(rid, record->data, context_);
+            std::vector<IndexChange> changes;
+            for (size_t index_no = 0; index_no < tab_.indexes.size(); ++index_no) {
+                const auto &index = tab_.indexes[index_no];
+                IndexChange change;
+                change.old_key.resize(index.col_tot_len);
+                change.new_key.resize(index.col_tot_len);
+                int offset = 0;
+                for (const auto &col : index.cols) {
+                    memcpy(change.old_key.data() + offset, old_record->data + col.offset, col.len);
+                    memcpy(change.new_key.data() + offset, record->data + col.offset, col.len);
+                    offset += col.len;
+                }
+                auto name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols);
+                change.handle = sm_manager_->ihs_.at(name).get();
+                change.changed = change.old_key != change.new_key;
+                std::string final_key(change.new_key.data(), change.new_key.size());
+                if (!final_keys[index_no].insert(final_key).second) {
+                    throw InternalError("Duplicate index key");
+                }
+                changes.push_back(std::move(change));
+            }
+            pending.push_back({rid, std::move(record), std::move(changes)});
+        }
+
+        auto is_target = [&](const Rid &rid) {
+            return std::find(rids_.begin(), rids_.end(), rid) != rids_.end();
+        };
+        for (auto &item : pending) {
+            for (auto &change : item.changes) {
+                if (!change.changed) continue;
+                std::vector<Rid> existing;
+                if (change.handle->get_value(change.new_key.data(), &existing, context_->txn_) &&
+                    !existing.empty() && existing.front() != item.rid && !is_target(existing.front())) {
+                    throw InternalError("Duplicate index key");
+                }
+            }
+        }
+        for (auto &item : pending) {
+            for (auto &change : item.changes) {
+                if (change.changed && !change.handle->delete_entry(change.old_key.data(), context_->txn_)) {
+                    throw InternalError("Index entry missing during update");
+                }
+            }
+        }
+        for (auto &item : pending) fh_->update_record(item.rid, item.record->data, context_);
+        for (auto &item : pending) {
+            for (auto &change : item.changes) {
+                if (change.changed) change.handle->insert_entry(change.new_key.data(), item.rid, context_->txn_);
+            }
         }
         return nullptr;
     }
