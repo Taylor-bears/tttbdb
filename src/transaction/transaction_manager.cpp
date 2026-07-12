@@ -42,6 +42,8 @@ void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
     if (txn == nullptr) return;
     for (auto *write_record : *txn->get_write_set()) delete write_record;
     txn->get_write_set()->clear();
+    for (const auto &lock_id : *txn->get_lock_set()) lock_manager_->unlock(txn, lock_id);
+    txn->get_lock_set()->clear();
     txn->set_state(TransactionState::COMMITTED);
 }
 
@@ -51,11 +53,67 @@ void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
  * @param {LogManager} *log_manager 日志管理器指针
  */
 void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
-    // Todo:
-    // 1. 回滚所有写操作
-    // 2. 释放所有锁
-    // 3. 清空事务相关资源，eg.锁集
-    // 4. 把事务日志刷入磁盘中
-    // 5. 更新事务状态
-    
+    (void)log_manager;
+    if (txn == nullptr) return;
+
+    auto make_key = [](const RmRecord &record, const IndexMeta &index) {
+        std::vector<char> key(index.col_tot_len);
+        int offset = 0;
+        for (const auto &col : index.cols) {
+            std::memcpy(key.data() + offset, record.data + col.offset, col.len);
+            offset += col.len;
+        }
+        return key;
+    };
+
+    auto write_set = txn->get_write_set();
+    while (!write_set->empty()) {
+        std::unique_ptr<WriteRecord> write(write_set->back());
+        write_set->pop_back();
+        const std::string &table_name = write->GetTableName();
+        TabMeta &table = sm_manager_->db_.get_table(table_name);
+        RmFileHandle *file = sm_manager_->fhs_.at(table_name).get();
+        const Rid rid = write->GetRid();
+
+        if (write->GetWriteType() == WType::INSERT_TUPLE) {
+            if (!file->is_record(rid)) continue;
+            auto current = file->get_record(rid, nullptr);
+            for (const auto &index : table.indexes) {
+                auto key = make_key(*current, index);
+                auto name = sm_manager_->get_ix_manager()->get_index_name(table_name, index.cols);
+                if (!sm_manager_->ihs_.at(name)->delete_entry(key.data(), txn)) {
+                    throw InternalError("Index entry missing while undoing insert");
+                }
+            }
+            file->delete_record(rid, nullptr);
+        } else if (write->GetWriteType() == WType::DELETE_TUPLE) {
+            RmRecord &old_record = write->GetRecord();
+            file->insert_record(rid, old_record.data);
+            for (const auto &index : table.indexes) {
+                auto key = make_key(old_record, index);
+                auto name = sm_manager_->get_ix_manager()->get_index_name(table_name, index.cols);
+                sm_manager_->ihs_.at(name)->insert_entry(key.data(), rid, txn);
+            }
+        } else if (write->GetWriteType() == WType::UPDATE_TUPLE) {
+            auto current = file->get_record(rid, nullptr);
+            for (const auto &index : table.indexes) {
+                auto key = make_key(*current, index);
+                auto name = sm_manager_->get_ix_manager()->get_index_name(table_name, index.cols);
+                if (!sm_manager_->ihs_.at(name)->delete_entry(key.data(), txn)) {
+                    throw InternalError("Index entry missing while undoing update");
+                }
+            }
+            RmRecord &old_record = write->GetRecord();
+            file->update_record(rid, old_record.data, nullptr);
+            for (const auto &index : table.indexes) {
+                auto key = make_key(old_record, index);
+                auto name = sm_manager_->get_ix_manager()->get_index_name(table_name, index.cols);
+                sm_manager_->ihs_.at(name)->insert_entry(key.data(), rid, txn);
+            }
+        }
+    }
+
+    for (const auto &lock_id : *txn->get_lock_set()) lock_manager_->unlock(txn, lock_id);
+    txn->get_lock_set()->clear();
+    txn->set_state(TransactionState::ABORTED);
 }

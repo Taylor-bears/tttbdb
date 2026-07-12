@@ -47,6 +47,7 @@ class UpdateExecutor : public AbstractExecutor {
         };
         struct PendingUpdate {
             Rid rid;
+            std::unique_ptr<RmRecord> old_record;
             std::unique_ptr<RmRecord> record;
             std::vector<IndexChange> changes;
         };
@@ -82,7 +83,7 @@ class UpdateExecutor : public AbstractExecutor {
                 }
                 changes.push_back(std::move(change));
             }
-            pending.push_back({rid, std::move(record), std::move(changes)});
+            pending.push_back({rid, std::move(old_record), std::move(record), std::move(changes)});
         }
 
         auto is_target = [&](const Rid &rid) {
@@ -109,6 +110,12 @@ class UpdateExecutor : public AbstractExecutor {
         for (auto &item : pending) {
             for (auto &change : item.changes) {
                 if (change.changed) change.handle->insert_entry(change.new_key.data(), item.rid, context_->txn_);
+            }
+        }
+        if (context_->txn_ != nullptr) {
+            for (const auto &item : pending) {
+                context_->txn_->append_write_record(
+                    new WriteRecord(WType::UPDATE_TUPLE, tab_name_, item.rid, *item.old_record));
             }
         }
         return nullptr;

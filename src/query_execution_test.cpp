@@ -302,6 +302,63 @@ TEST_F(QueryExecutionTest, BlockNestedLoopJoinAcrossMultipleBlocks) {
     EXPECT_EQ("BlockNestedLoopJoinExecutor", join.getType());
 }
 
+TEST_F(QueryExecutionTest, ExplicitTransactionCommitAndAbortWithIndexes) {
+    auto finish_current_and_start_fresh = [&](bool commit_current) {
+        if (commit_current) txn_manager->commit(txn, log_manager.get());
+        TransactionManager::txn_map.erase(txn_id);
+        delete txn;
+        txn = txn_manager->begin(nullptr, log_manager.get());
+        txn_id = txn->get_transaction_id();
+        context->txn_ = txn;
+    };
+
+    execute("create table tx_plain (id int, amount float);");
+    execute("create table tx_indexed (id int, happened datetime, name char(8));");
+    execute("create index tx_indexed (id);");
+    execute("create index tx_indexed (happened);");
+    execute("insert into tx_plain values (1, 10.0);");
+    execute("insert into tx_indexed values (1, '2026-07-12 09:00:00', 'original');");
+    finish_current_and_start_fresh(true);
+
+    execute("begin;");
+    execute("insert into tx_plain values (2, 20.0);");
+    execute("update tx_plain set amount = 99.0 where id = 1;");
+    execute("delete from tx_plain where id = 1;");
+    execute("insert into tx_indexed values (2, '2026-07-12 10:00:00', 'inserted');");
+    execute("update tx_indexed set id = 10, happened = '2026-07-13 11:30:00' where id = 1;");
+    execute("delete from tx_indexed where id = 10;");
+    execute("abort;");
+    EXPECT_EQ(TransactionState::ABORTED, txn->get_state());
+    finish_current_and_start_fresh(false);
+
+    EXPECT_EQ(1U, consume_select("select * from tx_plain where id = 1;"));
+    EXPECT_EQ(0U, consume_select("select * from tx_plain where id = 2;"));
+    EXPECT_EQ(1U, consume_select("select * from tx_indexed where id = 1;"));
+    EXPECT_EQ(0U, consume_select("select * from tx_indexed where id = 2;"));
+    EXPECT_EQ(0U, consume_select("select * from tx_indexed where id = 10;"));
+    EXPECT_EQ(1U, consume_select(
+        "select * from tx_indexed where happened = '2026-07-12 09:00:00';"));
+
+    execute("begin;");
+    execute("insert into tx_plain values (2, 20.0);");
+    execute("update tx_plain set amount = 15.0 where id = 1;");
+    execute("insert into tx_indexed values (2, '2026-07-12 10:00:00', 'inserted');");
+    execute("update tx_indexed set name = 'changed' where id = 1;");
+    execute("commit;");
+    EXPECT_EQ(TransactionState::COMMITTED, txn->get_state());
+    finish_current_and_start_fresh(false);
+
+    EXPECT_EQ(2U, consume_select("select * from tx_plain;"));
+    EXPECT_EQ(2U, consume_select("select * from tx_indexed;"));
+    EXPECT_EQ(1U, consume_select("select * from tx_indexed where id = 2;"));
+    execute("select * from tx_plain order by id;");
+    execute("select * from tx_indexed order by id;");
+    auto text = output();
+    EXPECT_NE(std::string::npos, text.find("| 1 | 15.000000 |\n| 2 | 20.000000 |"));
+    EXPECT_NE(std::string::npos, text.find("| 1 | 2026-07-12 09:00:00 | changed |"));
+    EXPECT_NE(std::string::npos, text.find("| 2 | 2026-07-12 10:00:00 | inserted |"));
+}
+
 TEST_F(QueryExecutionTest, RejectsInvalidSqlAndPersistsMetadata) {
     execute("create table t (id int, name char(4), score float);");
     execute("insert into t values (1, 'Data', 90);");
