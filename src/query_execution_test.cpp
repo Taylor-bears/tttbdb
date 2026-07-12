@@ -503,6 +503,7 @@ TEST_F(QueryExecutionTest, WalRedoUndoRecoveryRestoresTablesAndIndexes) {
 
     // Simulate a steal policy before a process crash: uncommitted pages reach disk,
     // but the transaction has no COMMIT log record.
+    log_manager->flush_log_to_disk();
     sm_manager->flush_all();
     for (auto *write : *txn->get_write_set()) delete write;
     txn->get_write_set()->clear();

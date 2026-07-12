@@ -42,10 +42,10 @@ Transaction * TransactionManager::begin(Transaction* txn, LogManager* log_manage
  */
 void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
     if (txn == nullptr) return;
-    sm_manager_->flush_all();
     if (log_manager != nullptr) {
         TransactionLogRecord record(LogType::commit, txn->get_transaction_id(), txn->get_prev_lsn());
         txn->set_prev_lsn(log_manager->add_log_to_buffer(&record));
+        log_manager->flush_log_to_disk();
     }
     for (auto *write_record : *txn->get_write_set()) delete write_record;
     txn->get_write_set()->clear();
@@ -120,10 +120,10 @@ void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
         }
     }
 
-    sm_manager_->flush_all();
     if (log_manager != nullptr) {
         TransactionLogRecord record(LogType::ABORT, txn->get_transaction_id(), txn->get_prev_lsn());
         txn->set_prev_lsn(log_manager->add_log_to_buffer(&record));
+        log_manager->flush_log_to_disk();
     }
 
     std::vector<LockDataId> locks(txn->get_lock_set()->begin(), txn->get_lock_set()->end());

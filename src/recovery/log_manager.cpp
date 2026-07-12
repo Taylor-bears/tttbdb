@@ -22,11 +22,24 @@ lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
     if (log_record == nullptr) throw InternalError("Cannot append null log record");
     std::lock_guard<std::mutex> guard(latch_);
     log_record->lsn_ = global_lsn_.fetch_add(1);
-    std::vector<char> serialized(log_record->log_tot_len_);
-    log_record->serialize(serialized.data());
-    disk_manager_->write_log(serialized.data(), static_cast<int>(serialized.size()));
-    disk_manager_->sync_file(disk_manager_->GetLogFd());
-    persist_lsn_ = log_record->lsn_;
+    if (log_record->log_tot_len_ > LOG_BUFFER_SIZE) {
+        if (log_buffer_.offset_ > 0) {
+            disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
+            log_buffer_.offset_ = 0;
+        }
+        std::vector<char> serialized(log_record->log_tot_len_);
+        log_record->serialize(serialized.data());
+        disk_manager_->write_log(serialized.data(), static_cast<int>(serialized.size()));
+        return log_record->lsn_;
+    }
+    if (log_buffer_.is_full(static_cast<int>(log_record->log_tot_len_))) {
+        if (log_buffer_.offset_ > 0) {
+            disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
+            log_buffer_.offset_ = 0;
+        }
+    }
+    log_record->serialize(log_buffer_.buffer_ + log_buffer_.offset_);
+    log_buffer_.offset_ += static_cast<int>(log_record->log_tot_len_);
     return log_record->lsn_;
 }
 
@@ -38,6 +51,7 @@ void LogManager::flush_log_to_disk() {
     if (log_buffer_.offset_ > 0) {
         disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
         log_buffer_.offset_ = 0;
+        persist_lsn_ = global_lsn_.load() - 1;
     }
     if (disk_manager_->GetLogFd() >= 0) disk_manager_->sync_file(disk_manager_->GetLogFd());
 }

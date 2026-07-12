@@ -192,6 +192,9 @@ void *client_handler(void *sock_fd) {
         {
             txn_manager->commit(context->txn_, context->log_mgr_);
         }
+        // Explicit transactions do not commit after every statement. Flush the
+        // statement's WAL records before accepting a possible crash command.
+        context->log_mgr_->flush_log_to_disk();
     }
 
     // Clear
