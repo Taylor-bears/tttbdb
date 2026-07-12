@@ -273,6 +273,35 @@ TEST_F(QueryExecutionTest, CrossProductAndJoin) {
     EXPECT_NE(std::string::npos, text.find("| 2 | baa | 23456 |"));
 }
 
+TEST_F(QueryExecutionTest, BlockNestedLoopJoinAcrossMultipleBlocks) {
+    execute("create table bleft (id int, payload char(4));");
+    execute("create table bright (right_id int);");
+    for (int id = 1; id <= 6; ++id) {
+        execute("insert into bleft values (" + std::to_string(id) + ", 'data');");
+    }
+    execute("insert into bright values (2);");
+    execute("insert into bright values (4);");
+    execute("insert into bright values (7);");
+
+    YY_BUFFER_STATE buffer = yy_scan_string(
+        "select * from bleft, bright where bleft.id < bright.right_id and bright.right_id < 7;");
+    ASSERT_EQ(0, yyparse());
+    auto query = analyze->do_analyze(ast::parse_tree);
+    yy_delete_buffer(buffer);
+
+    auto left = std::make_unique<SeqScanExecutor>(sm_manager.get(), "bleft", std::vector<Condition>{}, context.get());
+    auto right = std::make_unique<SeqScanExecutor>(sm_manager.get(), "bright", std::vector<Condition>{}, context.get());
+    NestedLoopJoinExecutor join(std::move(left), std::move(right), query->conds, 16);
+
+    size_t count = 0;
+    for (join.beginTuple(); !join.is_end(); join.nextTuple()) {
+        ASSERT_NE(nullptr, join.Next());
+        ++count;
+    }
+    EXPECT_EQ(4U, count);
+    EXPECT_EQ("BlockNestedLoopJoinExecutor", join.getType());
+}
+
 TEST_F(QueryExecutionTest, RejectsInvalidSqlAndPersistsMetadata) {
     execute("create table t (id int, name char(4), score float);");
     execute("insert into t values (1, 'Data', 90);");
