@@ -24,7 +24,7 @@ using namespace ast;
 // keywords
 %token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY
 WHERE UPDATE SET SELECT INT BIGINT DATETIME CHAR FLOAT INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY
-COUNT MAX MIN SUM AS
+COUNT MAX MIN SUM AS LIMIT
 // non-keywords
 %token LEQ NEQ GEQ T_EOF INVALID
 
@@ -56,6 +56,7 @@ COUNT MAX MIN SUM AS
 %type <sv_conds> whereClause optWhereClause
 %type <sv_orderby>  order_clause opt_order_clause
 %type <sv_orderby_dir> opt_asc_desc
+%type <sv_bigint> opt_limit_clause
 
 %%
 start:
@@ -154,13 +155,13 @@ dml:
     {
         $$ = std::make_shared<UpdateStmt>($2, $4, $5);
     }
-    |   SELECT selector FROM tableList optWhereClause opt_order_clause
+    |   SELECT selector FROM tableList optWhereClause opt_order_clause opt_limit_clause
     {
-        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6);
+        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6, $7);
     }
-    |   SELECT aggregateList FROM tableList optWhereClause opt_order_clause
+    |   SELECT aggregateList FROM tableList optWhereClause opt_order_clause opt_limit_clause
     {
-        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6);
+        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6, $7);
     }
     ;
 
@@ -428,6 +429,11 @@ order_clause:
     { 
         $$ = std::make_shared<OrderBy>($1, $2);
     }
+    | order_clause ',' col opt_asc_desc
+    {
+        $1->append($3, $4);
+        $$ = $1;
+    }
     ;   
 
 opt_asc_desc:
@@ -435,6 +441,15 @@ opt_asc_desc:
     |  DESC      { $$ = OrderBy_DESC;    }
     |       { $$ = OrderBy_DEFAULT; }
     ;    
+
+opt_limit_clause:
+        LIMIT VALUE_INT
+    {
+        if ($2 < 0) YYERROR;
+        $$ = $2;
+    }
+    |   /* epsilon */ { $$ = -1; }
+    ;
 
 tbName: IDENTIFIER;
 

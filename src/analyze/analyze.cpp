@@ -79,6 +79,14 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
                 }
             }
         }
+        if (x->order != nullptr) {
+            for (size_t i = 0; i < x->order->cols.size(); ++i) {
+                const auto &col = x->order->cols[i];
+                query->sort_cols.push_back(check_column(all_cols, {col->tab_name, col->col_name}));
+                query->sort_desc.push_back(x->order->orderby_dirs[i] == ast::OrderBy_DESC);
+            }
+        }
+        query->limit = x->limit;
         //处理where条件
         get_clause(x->conds, query->conds);
         check_clause(query->tables, query->conds);

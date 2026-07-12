@@ -205,6 +205,32 @@ TEST_F(QueryExecutionTest, AggregateFunctionsAndAliases) {
     EXPECT_TRUE(is_rejected("select SUM(name) as invalid_sum from aggregate_data;"));
 }
 
+TEST_F(QueryExecutionTest, MultiColumnOrderByAndLimit) {
+    execute("create table orders (company char(10), order_number int, price float);");
+    execute("insert into orders values ('AAA', 12, 3.0);");
+    execute("insert into orders values ('ABB', 13, 1.5);");
+    execute("insert into orders values ('ABC', 19, 2.5);");
+    execute("insert into orders values ('ACA', 1, 4.0);");
+    execute("select company, order_number from orders order by order_number;");
+    execute("select company, order_number from orders order by company, order_number;");
+    execute("select company, order_number from orders order by company desc, order_number asc;");
+    execute("select company, order_number from orders order by order_number asc limit 2;");
+    execute("select company from orders where order_number > 10 order by price desc limit 2;");
+    execute("select company from orders limit 0;");
+
+    auto text = output();
+    EXPECT_NE(std::string::npos, text.find(
+        "| company | order_number |\n| ACA | 1 |\n| AAA | 12 |\n| ABB | 13 |\n| ABC | 19 |"));
+    EXPECT_NE(std::string::npos, text.find(
+        "| company | order_number |\n| AAA | 12 |\n| ABB | 13 |\n| ABC | 19 |\n| ACA | 1 |"));
+    EXPECT_NE(std::string::npos, text.find(
+        "| company | order_number |\n| ACA | 1 |\n| ABC | 19 |\n| ABB | 13 |\n| AAA | 12 |"));
+    EXPECT_NE(std::string::npos, text.find(
+        "| company | order_number |\n| ACA | 1 |\n| AAA | 12 |"));
+    EXPECT_NE(std::string::npos, text.find("| company |\n| AAA |\n| ABC |"));
+    EXPECT_TRUE(is_rejected("select company from orders limit -1;"));
+}
+
 TEST_F(QueryExecutionTest, UpdateWithMultipleAssignments) {
     execute("create table grade (name char(4), id int, score float);");
     execute("insert into grade values ('Data', 1, 90.5);");

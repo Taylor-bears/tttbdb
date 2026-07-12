@@ -30,6 +30,9 @@ class Query{
     std::vector<TabCol> cols;
     // 聚合表达式
     std::vector<AggregateSpec> aggregates;
+    std::vector<TabCol> sort_cols;
+    std::vector<bool> sort_desc;
+    int64_t limit = -1;
     // 表名
     std::vector<std::string> tables;
     // update 的set 值
