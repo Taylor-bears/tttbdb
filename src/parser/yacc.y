@@ -24,6 +24,7 @@ using namespace ast;
 // keywords
 %token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY
 WHERE UPDATE SET SELECT INT BIGINT DATETIME CHAR FLOAT INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY
+COUNT MAX MIN SUM AS
 // non-keywords
 %token LEQ NEQ GEQ T_EOF INVALID
 
@@ -45,6 +46,10 @@ WHERE UPDATE SET SELECT INT BIGINT DATETIME CHAR FLOAT INDEX AND JOIN EXIT HELP 
 %type <sv_strs> tableList colNameList
 %type <sv_col> col
 %type <sv_cols> colList selector
+%type <sv_aggregate> aggregate
+%type <sv_aggregates> aggregateList
+%type <sv_aggregate_type> aggregateFunc
+%type <sv_str> optAlias
 %type <sv_set_clause> setClause
 %type <sv_set_clauses> setClauses
 %type <sv_cond> condition
@@ -150,6 +155,10 @@ dml:
         $$ = std::make_shared<UpdateStmt>($2, $4, $5);
     }
     |   SELECT selector FROM tableList optWhereClause opt_order_clause
+    {
+        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6);
+    }
+    |   SELECT aggregateList FROM tableList optWhereClause opt_order_clause
     {
         $$ = std::make_shared<SelectStmt>($2, $4, $5, $6);
     }
@@ -348,6 +357,47 @@ selector:
         $$ = {};
     }
     |   colList
+    ;
+
+aggregateList:
+        aggregate
+    {
+        $$ = std::vector<std::shared_ptr<AggregateExpr>>{$1};
+    }
+    |   aggregateList ',' aggregate
+    {
+        $$.push_back($3);
+    }
+    ;
+
+aggregate:
+        aggregateFunc '(' col ')' optAlias
+    {
+        $$ = std::make_shared<AggregateExpr>($1, $3, false, $5);
+    }
+    |   COUNT '(' col ')' optAlias
+    {
+        $$ = std::make_shared<AggregateExpr>(AGG_COUNT, $3, false, $5);
+    }
+    |   COUNT '(' '*' ')' optAlias
+    {
+        $$ = std::make_shared<AggregateExpr>(AGG_COUNT, nullptr, true, $5);
+    }
+    |   COUNT '(' ')' optAlias
+    {
+        $$ = std::make_shared<AggregateExpr>(AGG_COUNT, nullptr, true, $4);
+    }
+    ;
+
+aggregateFunc:
+        MAX   { $$ = AGG_MAX; }
+    |   MIN   { $$ = AGG_MIN; }
+    |   SUM   { $$ = AGG_SUM; }
+    ;
+
+optAlias:
+        AS colName { $$ = $2; }
+    |   /* epsilon */ { $$ = ""; }
     ;
 
 tableList:

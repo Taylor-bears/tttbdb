@@ -32,6 +32,15 @@ struct TabCol {
     }
 };
 
+enum AggregateType { AGG_COUNT, AGG_MAX, AGG_MIN, AGG_SUM };
+
+struct AggregateSpec {
+    AggregateType type;
+    TabCol col;
+    bool count_star;
+    std::string alias;
+};
+
 inline int64_t parse_datetime(const std::string &text) {
     if (text.size() != 19 || text[4] != '-' || text[7] != '-' || text[10] != ' ' ||
         text[13] != ':' || text[16] != ':') {

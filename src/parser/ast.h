@@ -153,6 +153,18 @@ struct Col : public Expr {
             tab_name(std::move(tab_name_)), col_name(std::move(col_name_)) {}
 };
 
+enum AggregateType { AGG_COUNT, AGG_MAX, AGG_MIN, AGG_SUM };
+
+struct AggregateExpr : public Expr {
+    AggregateType type;
+    std::shared_ptr<Col> col;
+    bool count_star;
+    std::string alias;
+
+    AggregateExpr(AggregateType type_, std::shared_ptr<Col> col_, bool count_star_, std::string alias_)
+        : type(type_), col(std::move(col_)), count_star(count_star_), alias(std::move(alias_)) {}
+};
+
 struct SetClause : public TreeNode {
     std::string col_name;
     std::shared_ptr<Value> val;
@@ -218,6 +230,7 @@ struct JoinExpr : public TreeNode {
 
 struct SelectStmt : public TreeNode {
     std::vector<std::shared_ptr<Col>> cols;
+    std::vector<std::shared_ptr<AggregateExpr>> aggregates;
     std::vector<std::string> tabs;
     std::vector<std::shared_ptr<BinaryExpr>> conds;
     std::vector<std::shared_ptr<JoinExpr>> jointree;
@@ -232,6 +245,15 @@ struct SelectStmt : public TreeNode {
                std::vector<std::shared_ptr<BinaryExpr>> conds_,
                std::shared_ptr<OrderBy> order_) :
             cols(std::move(cols_)), tabs(std::move(tabs_)), conds(std::move(conds_)), 
+            order(std::move(order_)) {
+                has_sort = (bool)order;
+            }
+
+    SelectStmt(std::vector<std::shared_ptr<AggregateExpr>> aggregates_,
+               std::vector<std::string> tabs_,
+               std::vector<std::shared_ptr<BinaryExpr>> conds_,
+               std::shared_ptr<OrderBy> order_) :
+            aggregates(std::move(aggregates_)), tabs(std::move(tabs_)), conds(std::move(conds_)),
             order(std::move(order_)) {
                 has_sort = (bool)order;
             }
@@ -262,6 +284,10 @@ struct SemValue {
 
     std::shared_ptr<Col> sv_col;
     std::vector<std::shared_ptr<Col>> sv_cols;
+
+    AggregateType sv_aggregate_type;
+    std::shared_ptr<AggregateExpr> sv_aggregate;
+    std::vector<std::shared_ptr<AggregateExpr>> sv_aggregates;
 
     std::shared_ptr<SetClause> sv_set_clause;
     std::vector<std::shared_ptr<SetClause>> sv_set_clauses;

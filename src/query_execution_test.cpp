@@ -181,6 +181,30 @@ TEST_F(QueryExecutionTest, InsertAndConditionalSelect) {
     EXPECT_NE(std::string::npos, text.find("| name |\n| Data |\n| Calc |"));
 }
 
+TEST_F(QueryExecutionTest, AggregateFunctionsAndAliases) {
+    execute("create table aggregate_data (id int, name char(8), val float);");
+    execute("insert into aggregate_data values (1, 'qwerasdf', 5.5);");
+    execute("insert into aggregate_data values (3, 'qwerasdf', 4.5);");
+    execute("insert into aggregate_data values (5, 'uiophjkl', 10.0);");
+    execute("select SUM(id) as sum_id, SUM(val) as sum_val from aggregate_data;");
+    execute("select MAX(id) as max_id, MIN(val) as min_val from aggregate_data;");
+    execute("select COUNT(*) as count_row, COUNT(id) as count_id from aggregate_data;");
+    execute("select COUNT() as count_all from aggregate_data;");
+    execute("select COUNT(name) as count_name from aggregate_data where val >= 5.5;");
+    execute("select COUNT(*) as count_empty from aggregate_data where id > 100;");
+    execute("select MAX(name) as max_name, MIN(name) as min_name from aggregate_data;");
+
+    auto text = output();
+    EXPECT_NE(std::string::npos, text.find("| sum_id | sum_val |\n| 9 | 20.000000 |"));
+    EXPECT_NE(std::string::npos, text.find("| max_id | min_val |\n| 5 | 4.500000 |"));
+    EXPECT_NE(std::string::npos, text.find("| count_row | count_id |\n| 3 | 3 |"));
+    EXPECT_NE(std::string::npos, text.find("| count_all |\n| 3 |"));
+    EXPECT_NE(std::string::npos, text.find("| count_name |\n| 2 |"));
+    EXPECT_NE(std::string::npos, text.find("| count_empty |\n| 0 |"));
+    EXPECT_NE(std::string::npos, text.find("| max_name | min_name |\n| uiophjkl | qwerasdf |"));
+    EXPECT_TRUE(is_rejected("select SUM(name) as invalid_sum from aggregate_data;"));
+}
+
 TEST_F(QueryExecutionTest, UpdateWithMultipleAssignments) {
     execute("create table grade (name char(4), id int, score float);");
     execute("insert into grade values ('Data', 1, 90.5);");

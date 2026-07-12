@@ -28,6 +28,8 @@ class Query{
     std::vector<Condition> conds;
     // 投影列
     std::vector<TabCol> cols;
+    // 聚合表达式
+    std::vector<AggregateSpec> aggregates;
     // 表名
     std::vector<std::string> tables;
     // update 的set 值
@@ -57,4 +59,3 @@ private:
     Value convert_sv_value(const std::shared_ptr<ast::Value> &sv_val);
     CompOp convert_sv_comp_op(ast::SvCompOp op);
 };
-

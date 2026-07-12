@@ -32,24 +32,51 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
             sm_manager_->db_.get_table(tab_name);
         }
 
-        // 处理target list，再target list中添加上表名，例如 a.id
-        for (auto &sv_sel_col : x->cols) {
-            TabCol sel_col = {.tab_name = sv_sel_col->tab_name, .col_name = sv_sel_col->col_name};
-            query->cols.push_back(sel_col);
-        }
-        
         std::vector<ColMeta> all_cols;
         get_all_cols(query->tables, all_cols);
-        if (query->cols.empty()) {
-            // select all columns
-            for (auto &col : all_cols) {
-                TabCol sel_col = {.tab_name = col.tab_name, .col_name = col.name};
-                query->cols.push_back(sel_col);
+
+        if (!x->aggregates.empty()) {
+            for (const auto &sv_agg : x->aggregates) {
+                AggregateSpec agg;
+                switch (sv_agg->type) {
+                    case ast::AGG_COUNT: agg.type = AGG_COUNT; break;
+                    case ast::AGG_MAX: agg.type = AGG_MAX; break;
+                    case ast::AGG_MIN: agg.type = AGG_MIN; break;
+                    case ast::AGG_SUM: agg.type = AGG_SUM; break;
+                }
+                agg.count_star = sv_agg->count_star;
+                if (!agg.count_star) {
+                    agg.col = check_column(all_cols, {sv_agg->col->tab_name, sv_agg->col->col_name});
+                    auto meta = std::find_if(all_cols.begin(), all_cols.end(), [&](const ColMeta &col) {
+                        return col.tab_name == agg.col.tab_name && col.name == agg.col.col_name;
+                    });
+                    if (agg.type == AGG_SUM && meta->type != TYPE_INT && meta->type != TYPE_FLOAT) {
+                        throw IncompatibleTypeError("INT or FLOAT", coltype2str(meta->type));
+                    }
+                }
+                if (!sv_agg->alias.empty()) {
+                    agg.alias = sv_agg->alias;
+                } else if (agg.count_star) {
+                    agg.alias = "COUNT(*)";
+                } else {
+                    static const char *names[] = {"COUNT", "MAX", "MIN", "SUM"};
+                    agg.alias = std::string(names[agg.type]) + "(" + agg.col.col_name + ")";
+                }
+                query->aggregates.push_back(std::move(agg));
             }
         } else {
-            // infer table name from column name
-            for (auto &sel_col : query->cols) {
-                sel_col = check_column(all_cols, sel_col);  // 列元数据校验
+            // 处理target list，再target list中添加上表名，例如 a.id
+            for (auto &sv_sel_col : x->cols) {
+                query->cols.push_back({sv_sel_col->tab_name, sv_sel_col->col_name});
+            }
+            if (query->cols.empty()) {
+                for (auto &col : all_cols) {
+                    query->cols.push_back({col.tab_name, col.name});
+                }
+            } else {
+                for (auto &sel_col : query->cols) {
+                    sel_col = check_column(all_cols, sel_col);
+                }
             }
         }
         //处理where条件

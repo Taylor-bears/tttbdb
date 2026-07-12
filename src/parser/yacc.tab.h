@@ -35,8 +35,8 @@
    especially those whose name start with YY_ or yy_.  They are
    private implementation details that can be changed or removed.  */
 
-#ifndef YY_YY_USERS_SXY_DOCUMENTS_PROJECTS_RUCBASE_SRC_PARSER_YACC_TAB_H_INCLUDED
-# define YY_YY_USERS_SXY_DOCUMENTS_PROJECTS_RUCBASE_SRC_PARSER_YACC_TAB_H_INCLUDED
+#ifndef YY_YY_C_USERS_BEAR_DESKTOP_RMDB_SRC_PARSER_YACC_TAB_H_INCLUDED
+# define YY_YY_C_USERS_BEAR_DESKTOP_RMDB_SRC_PARSER_YACC_TAB_H_INCLUDED
 /* Debug traces.  */
 #ifndef YYDEBUG
 # define YYDEBUG 0
@@ -87,15 +87,20 @@ extern int yydebug;
     TXN_ABORT = 288,               /* TXN_ABORT  */
     TXN_ROLLBACK = 289,            /* TXN_ROLLBACK  */
     ORDER_BY = 290,                /* ORDER_BY  */
-    LEQ = 291,                     /* LEQ  */
-    NEQ = 292,                     /* NEQ  */
-    GEQ = 293,                     /* GEQ  */
-    T_EOF = 294,                   /* T_EOF  */
-    INVALID = 295,                 /* INVALID  */
-    IDENTIFIER = 296,              /* IDENTIFIER  */
-    VALUE_STRING = 297,            /* VALUE_STRING  */
-    VALUE_INT = 298,               /* VALUE_INT  */
-    VALUE_FLOAT = 299              /* VALUE_FLOAT  */
+    COUNT = 291,                   /* COUNT  */
+    MAX = 292,                     /* MAX  */
+    MIN = 293,                     /* MIN  */
+    SUM = 294,                     /* SUM  */
+    AS = 295,                      /* AS  */
+    LEQ = 296,                     /* LEQ  */
+    NEQ = 297,                     /* NEQ  */
+    GEQ = 298,                     /* GEQ  */
+    T_EOF = 299,                   /* T_EOF  */
+    INVALID = 300,                 /* INVALID  */
+    IDENTIFIER = 301,              /* IDENTIFIER  */
+    VALUE_STRING = 302,            /* VALUE_STRING  */
+    VALUE_INT = 303,               /* VALUE_INT  */
+    VALUE_FLOAT = 304              /* VALUE_FLOAT  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -122,4 +127,4 @@ struct YYLTYPE
 int yyparse (void);
 
 
-#endif /* !YY_YY_USERS_SXY_DOCUMENTS_PROJECTS_RUCBASE_SRC_PARSER_YACC_TAB_H_INCLUDED  */
+#endif /* !YY_YY_C_USERS_BEAR_DESKTOP_RMDB_SRC_PARSER_YACC_TAB_H_INCLUDED  */

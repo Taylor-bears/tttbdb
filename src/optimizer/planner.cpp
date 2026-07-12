@@ -244,8 +244,18 @@ std::shared_ptr<Plan> Planner::generate_select_plan(std::shared_ptr<Query> query
     query = logical_optimization(std::move(query), context);
 
     //物理优化
-    auto sel_cols = query->cols;
     std::shared_ptr<Plan> plannerRoot = physical_optimization(query, context);
+    if (!query->aggregates.empty()) {
+        std::vector<TabCol> result_cols;
+        result_cols.reserve(query->aggregates.size());
+        for (const auto &aggregate : query->aggregates) {
+            result_cols.push_back({"", aggregate.alias});
+        }
+        plannerRoot = std::make_shared<AggregatePlan>(std::move(plannerRoot), query->aggregates);
+        return std::make_shared<ProjectionPlan>(T_Projection, std::move(plannerRoot), std::move(result_cols));
+    }
+
+    auto sel_cols = query->cols;
     plannerRoot = std::make_shared<ProjectionPlan>(T_Projection, std::move(plannerRoot), 
                                                         std::move(sel_cols));
 
