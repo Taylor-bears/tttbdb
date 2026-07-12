@@ -99,6 +99,14 @@ class UpdateExecutor : public AbstractExecutor {
                 }
             }
         }
+        if (context_->txn_ != nullptr && context_->log_mgr_ != nullptr) {
+            for (const auto &item : pending) {
+                DataLogRecord log(LogType::UPDATE, context_->txn_->get_transaction_id(),
+                                  context_->txn_->get_prev_lsn(), tab_name_, item.rid,
+                                  item.old_record.get(), item.record.get());
+                context_->txn_->set_prev_lsn(context_->log_mgr_->add_log_to_buffer(&log));
+            }
+        }
         for (auto &item : pending) {
             for (auto &change : item.changes) {
                 if (change.changed && !change.handle->delete_entry(change.old_key.data(), context_->txn_)) {

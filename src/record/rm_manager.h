@@ -81,4 +81,11 @@ class RmManager {
         buffer_pool_manager_->flush_all_pages(file_handle->fd_);
         disk_manager_->close_file(file_handle->fd_);
     }
+
+    void flush_file(const RmFileHandle *file_handle) {
+        disk_manager_->write_page(file_handle->fd_, RM_FILE_HDR_PAGE, (char *)&file_handle->file_hdr_,
+                                  sizeof(file_handle->file_hdr_));
+        buffer_pool_manager_->flush_all_pages(file_handle->fd_);
+        disk_manager_->sync_file(file_handle->fd_);
+    }
 };

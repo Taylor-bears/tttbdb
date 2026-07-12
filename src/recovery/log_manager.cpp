@@ -9,6 +9,8 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include <cstring>
+#include <vector>
+#include <unistd.h>
 #include "log_manager.h"
 
 /**
@@ -17,12 +19,25 @@ See the Mulan PSL v2 for more details. */
  * @return {lsn_t} 返回该日志的日志记录号
  */
 lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
-  
+    if (log_record == nullptr) throw InternalError("Cannot append null log record");
+    std::lock_guard<std::mutex> guard(latch_);
+    log_record->lsn_ = global_lsn_.fetch_add(1);
+    std::vector<char> serialized(log_record->log_tot_len_);
+    log_record->serialize(serialized.data());
+    disk_manager_->write_log(serialized.data(), static_cast<int>(serialized.size()));
+    disk_manager_->sync_file(disk_manager_->GetLogFd());
+    persist_lsn_ = log_record->lsn_;
+    return log_record->lsn_;
 }
 
 /**
  * @description: 把日志缓冲区的内容刷到磁盘中，由于目前只设置了一个缓冲区，因此需要阻塞其他日志操作
  */
 void LogManager::flush_log_to_disk() {
-
+    std::lock_guard<std::mutex> guard(latch_);
+    if (log_buffer_.offset_ > 0) {
+        disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
+        log_buffer_.offset_ = 0;
+    }
+    if (disk_manager_->GetLogFd() >= 0) disk_manager_->sync_file(disk_manager_->GetLogFd());
 }

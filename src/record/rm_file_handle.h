@@ -87,6 +87,13 @@ class RmFileHandle {
 
     void update_record(const Rid &rid, char *buf, Context *context);
 
+    void ensure_page_exists(page_id_t page_no) {
+        while (file_hdr_.num_pages <= page_no) {
+            RmPageHandle page = create_new_page_handle();
+            buffer_pool_manager_->unpin_page(page.page->get_page_id(), true);
+        }
+    }
+
     RmPageHandle create_new_page_handle();
 
     RmPageHandle fetch_page_handle(int page_no) const;

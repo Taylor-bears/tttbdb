@@ -166,4 +166,12 @@ class IxManager {
         disk_manager_->close_file(ih->fd_);
         delete[] data;
     }
+
+    void flush_index(const IxIndexHandle *ih) {
+        std::vector<char> data(ih->file_hdr_->tot_len_);
+        ih->file_hdr_->serialize(data.data());
+        disk_manager_->write_page(ih->fd_, IX_FILE_HDR_PAGE, data.data(), ih->file_hdr_->tot_len_);
+        buffer_pool_manager_->flush_all_pages(ih->fd_);
+        disk_manager_->sync_file(ih->fd_);
+    }
 };

@@ -64,6 +64,10 @@ class SmManager {
 
     void flush_meta();
 
+    void flush_all();
+
+    void rebuild_all_indexes();
+
     void show_tables(Context* context);
 
     void show_index(const std::string& tab_name, Context* context);

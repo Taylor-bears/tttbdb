@@ -11,6 +11,8 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <map>
+#include <set>
+#include <string>
 #include <unordered_map>
 #include "log_manager.h"
 #include "storage/disk_manager.h"
@@ -35,7 +37,21 @@ public:
     void redo();
     void undo();
 private:
-    LogBuffer buffer_;                                              // 读入日志
+    struct RecoveryRecord {
+        LogType type;
+        lsn_t lsn;
+        txn_id_t txn_id;
+        std::string table_name;
+        Rid rid{};
+        std::vector<char> old_data;
+        std::vector<char> new_data;
+    };
+
+    void apply_record(const RecoveryRecord &record, bool use_new_value);
+
+    std::vector<RecoveryRecord> records_;
+    std::set<txn_id_t> committed_;
+    std::set<txn_id_t> aborted_;
     DiskManager* disk_manager_;                                     // 用来读写文件
     BufferPoolManager* buffer_pool_manager_;                        // 对页面进行读写
     SmManager* sm_manager_;                                         // 访问数据库元数据

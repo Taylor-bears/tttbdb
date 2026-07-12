@@ -14,6 +14,9 @@ See the Mulan PSL v2 for more details. */
 #include <string.h>    // for memset
 #include <sys/stat.h>  // for stat
 #include <unistd.h>    // for lseek
+#ifdef _WIN32
+#include <io.h>
+#endif
 
 #include "defs.h"
 
@@ -275,4 +278,26 @@ void DiskManager::write_log(char *log_data, int size) {
     if (bytes_write != size) {
         throw UnixError();
     }
+}
+
+void DiskManager::sync_file(int fd) {
+    if (fd < 0) return;
+#ifdef _WIN32
+    if (_commit(fd) != 0) throw UnixError();
+#else
+    if (fsync(fd) != 0) throw UnixError();
+#endif
+}
+
+void DiskManager::reset_log() {
+    if (log_fd_ == -1) log_fd_ = open_file(LOG_FILE_NAME);
+    if (ftruncate(log_fd_, 0) != 0) throw UnixError();
+    if (lseek(log_fd_, 0, SEEK_SET) == static_cast<off_t>(-1)) throw UnixError();
+    sync_file(log_fd_);
+}
+
+void DiskManager::close_log() {
+    if (log_fd_ == -1) return;
+    close_file(log_fd_);
+    log_fd_ = -1;
 }

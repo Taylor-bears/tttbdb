@@ -127,6 +127,41 @@ void SmManager::flush_meta() {
     ofs << db_;
 }
 
+void SmManager::flush_all() {
+    flush_meta();
+    for (const auto &entry : fhs_) rm_manager_->flush_file(entry.second.get());
+    for (const auto &entry : ihs_) ix_manager_->flush_index(entry.second.get());
+}
+
+void SmManager::rebuild_all_indexes() {
+    for (auto &table_entry : db_.tabs_) {
+        auto &table = table_entry.second;
+        for (const auto &index : table.indexes) {
+            auto name = ix_manager_->get_index_name(table.name, index.cols);
+            auto handle = ihs_.find(name);
+            if (handle != ihs_.end()) {
+                ix_manager_->close_index(handle->second.get());
+                ihs_.erase(handle);
+            }
+            if (ix_manager_->exists(table.name, index.cols)) ix_manager_->destroy_index(table.name, index.cols);
+            ix_manager_->create_index(table.name, index.cols);
+            auto rebuilt = ix_manager_->open_index(table.name, index.cols);
+            auto *file = fhs_.at(table.name).get();
+            for (RmScan scan(file); !scan.is_end(); scan.next()) {
+                auto record = file->get_record(scan.rid(), nullptr);
+                std::vector<char> key(index.col_tot_len);
+                int offset = 0;
+                for (const auto &col : index.cols) {
+                    std::memcpy(key.data() + offset, record->data + col.offset, col.len);
+                    offset += col.len;
+                }
+                rebuilt->insert_entry(key.data(), scan.rid(), nullptr);
+            }
+            ihs_[name] = std::move(rebuilt);
+        }
+    }
+}
+
 /**
  * @description: 关闭数据库并把数据落盘
  */
@@ -137,6 +172,7 @@ void SmManager::close_db() {
     for (auto &entry : fhs_) rm_manager_->close_file(entry.second.get());
     fhs_.clear();
     db_ = DbMeta();
+    disk_manager_->close_log();
     if (chdir("..") < 0) throw UnixError();
 }
 

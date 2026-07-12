@@ -12,6 +12,7 @@
 #include "parser/parser.h"
 #include "portal.h"
 #include "recovery/log_manager.h"
+#include "recovery/log_recovery.h"
 #include "system/sm.h"
 #include "transaction/transaction_manager.h"
 
@@ -461,6 +462,89 @@ TEST_F(QueryExecutionTest, SerializableNoWaitPreventsDataAnomalies) {
     EXPECT_EQ(0U, consume_select("select * from concurrency_data where id = 2;"));
     execute("select * from concurrency_data where id = 1;");
     EXPECT_NE(std::string::npos, output().find("| 1 | xiaohong | 90.000000 |"));
+}
+
+TEST_F(QueryExecutionTest, WalRedoUndoRecoveryRestoresTablesAndIndexes) {
+    execute("create table recovery_data (id int, happened datetime, name char(8));");
+    execute("create index recovery_data (id);");
+    execute("create index recovery_data (happened);");
+    execute("insert into recovery_data values (1, '2026-07-12 08:00:00', 'commited');");
+    execute("insert into recovery_data values (3, '2026-07-12 09:00:00', 'keepme');");
+    txn_manager->commit(txn, log_manager.get());
+    TransactionManager::txn_map.erase(txn_id);
+    delete txn;
+
+    // An already-aborted transaction must not be undone again after a later
+    // committed transaction changes the same record.
+    txn = txn_manager->begin(nullptr, log_manager.get());
+    txn_id = txn->get_transaction_id();
+    txn->set_txn_mode(true);
+    context->txn_ = txn;
+    execute("update recovery_data set name = 'temp' where id = 1;");
+    txn_manager->abort(txn, log_manager.get());
+    TransactionManager::txn_map.erase(txn_id);
+    delete txn;
+
+    txn = txn_manager->begin(nullptr, log_manager.get());
+    txn_id = txn->get_transaction_id();
+    context->txn_ = txn;
+    execute("update recovery_data set name = 'winner' where id = 1;");
+    txn_manager->commit(txn, log_manager.get());
+    TransactionManager::txn_map.erase(txn_id);
+    delete txn;
+
+    txn = txn_manager->begin(nullptr, log_manager.get());
+    txn_id = txn->get_transaction_id();
+    txn->set_txn_mode(true);
+    context->txn_ = txn;
+    execute("insert into recovery_data values (2, '2026-07-12 10:00:00', 'loser');");
+    execute("update recovery_data set id = 10, happened = '2026-07-13 11:30:00' where id = 1;");
+    execute("delete from recovery_data where id = 3;");
+
+    // Simulate a steal policy before a process crash: uncommitted pages reach disk,
+    // but the transaction has no COMMIT log record.
+    sm_manager->flush_all();
+    for (auto *write : *txn->get_write_set()) delete write;
+    txn->get_write_set()->clear();
+    TransactionManager::txn_map.erase(txn_id);
+    delete txn;
+    txn = nullptr;
+    sm_manager->close_db();
+
+    // Recreate all volatile managers to model a process restart.
+    buffer_pool_manager = std::make_unique<BufferPoolManager>(128, disk_manager.get());
+    rm_manager = std::make_unique<RmManager>(disk_manager.get(), buffer_pool_manager.get());
+    ix_manager = std::make_unique<IxManager>(disk_manager.get(), buffer_pool_manager.get());
+    sm_manager = std::make_unique<SmManager>(disk_manager.get(), buffer_pool_manager.get(), rm_manager.get(),
+                                             ix_manager.get());
+    lock_manager = std::make_unique<LockManager>();
+    txn_manager = std::make_unique<TransactionManager>(lock_manager.get(), sm_manager.get());
+    ql_manager = std::make_unique<QlManager>(sm_manager.get(), txn_manager.get());
+    planner = std::make_unique<Planner>(sm_manager.get());
+    optimizer = std::make_unique<Optimizer>(sm_manager.get(), planner.get());
+    portal = std::make_unique<Portal>(sm_manager.get());
+    analyze = std::make_unique<Analyze>(sm_manager.get());
+    sm_manager->open_db(DB_NAME);
+
+    RecoveryManager recovery_manager(disk_manager.get(), buffer_pool_manager.get(), sm_manager.get());
+    recovery_manager.analyze();
+    recovery_manager.redo();
+    recovery_manager.undo();
+
+    txn = txn_manager->begin(nullptr, log_manager.get());
+    txn_id = txn->get_transaction_id();
+    context = std::make_unique<Context>(lock_manager.get(), log_manager.get(), txn, data_send, &offset);
+    EXPECT_EQ(1U, consume_select("select * from recovery_data where id = 1;"));
+    EXPECT_EQ(0U, consume_select("select * from recovery_data where id = 2;"));
+    EXPECT_EQ(1U, consume_select("select * from recovery_data where id = 3;"));
+    EXPECT_EQ(0U, consume_select("select * from recovery_data where id = 10;"));
+    EXPECT_EQ(1U, consume_select(
+        "select * from recovery_data where happened = '2026-07-12 08:00:00';"));
+    EXPECT_EQ(T_IndexScan, scan_tag("select * from recovery_data where id = 1;"));
+    execute("select * from recovery_data order by id;");
+    auto text = output();
+    EXPECT_NE(std::string::npos, text.find("| 1 | 2026-07-12 08:00:00 | winner |"));
+    EXPECT_NE(std::string::npos, text.find("| 3 | 2026-07-12 09:00:00 | keepme |"));
 }
 
 TEST_F(QueryExecutionTest, RejectsInvalidSqlAndPersistsMetadata) {

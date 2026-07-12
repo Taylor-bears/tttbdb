@@ -189,6 +189,55 @@ class UpdateLogRecord: public LogRecord {
 
 };
 
+class TransactionLogRecord : public LogRecord {
+public:
+    TransactionLogRecord(LogType type, txn_id_t txn_id, lsn_t prev_lsn) {
+        log_type_ = type;
+        lsn_ = INVALID_LSN;
+        log_tot_len_ = LOG_HEADER_SIZE;
+        log_tid_ = txn_id;
+        prev_lsn_ = prev_lsn;
+    }
+};
+
+class DataLogRecord : public LogRecord {
+public:
+    DataLogRecord(LogType type, txn_id_t txn_id, lsn_t prev_lsn, const std::string &table_name,
+                  const Rid &rid, const RmRecord *old_record, const RmRecord *new_record)
+        : table_name_(table_name), rid_(rid) {
+        log_type_ = type;
+        lsn_ = INVALID_LSN;
+        log_tid_ = txn_id;
+        prev_lsn_ = prev_lsn;
+        if (old_record != nullptr) old_data_.assign(old_record->data, old_record->data + old_record->size);
+        if (new_record != nullptr) new_data_.assign(new_record->data, new_record->data + new_record->size);
+        log_tot_len_ = LOG_HEADER_SIZE + sizeof(uint32_t) + table_name_.size() + sizeof(Rid) +
+                       sizeof(uint32_t) + old_data_.size() + sizeof(uint32_t) + new_data_.size();
+    }
+
+    void serialize(char *dest) const override {
+        LogRecord::serialize(dest);
+        int offset = OFFSET_LOG_DATA;
+        uint32_t table_len = static_cast<uint32_t>(table_name_.size());
+        uint32_t old_len = static_cast<uint32_t>(old_data_.size());
+        uint32_t new_len = static_cast<uint32_t>(new_data_.size());
+        std::memcpy(dest + offset, &table_len, sizeof(table_len)); offset += sizeof(table_len);
+        std::memcpy(dest + offset, table_name_.data(), table_len); offset += table_len;
+        std::memcpy(dest + offset, &rid_, sizeof(rid_)); offset += sizeof(rid_);
+        std::memcpy(dest + offset, &old_len, sizeof(old_len)); offset += sizeof(old_len);
+        if (old_len > 0) std::memcpy(dest + offset, old_data_.data(), old_len);
+        offset += old_len;
+        std::memcpy(dest + offset, &new_len, sizeof(new_len)); offset += sizeof(new_len);
+        if (new_len > 0) std::memcpy(dest + offset, new_data_.data(), new_len);
+    }
+
+private:
+    std::string table_name_;
+    Rid rid_;
+    std::vector<char> old_data_;
+    std::vector<char> new_data_;
+};
+
 /* 日志缓冲区，只有一个buffer，因此需要阻塞地去把日志写入缓冲区中 */
 
 class LogBuffer {
@@ -211,12 +260,14 @@ public:
 /* 日志管理器，负责把日志写入日志缓冲区，以及把日志缓冲区中的内容写入磁盘中 */
 class LogManager {
 public:
-    LogManager(DiskManager* disk_manager) { disk_manager_ = disk_manager; }
+    LogManager(DiskManager* disk_manager) : persist_lsn_(INVALID_LSN), disk_manager_(disk_manager) {}
     
     lsn_t add_log_to_buffer(LogRecord* log_record);
     void flush_log_to_disk();
 
     LogBuffer* get_log_buffer() { return &log_buffer_; }
+
+    void reset_lsn(lsn_t next_lsn) { global_lsn_.store(next_lsn); }
 
 private:    
     std::atomic<lsn_t> global_lsn_{0};  // 全局lsn，递增，用于为每条记录分发lsn
