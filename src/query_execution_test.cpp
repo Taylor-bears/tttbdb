@@ -359,6 +359,110 @@ TEST_F(QueryExecutionTest, ExplicitTransactionCommitAndAbortWithIndexes) {
     EXPECT_NE(std::string::npos, text.find("| 2 | 2026-07-12 10:00:00 | inserted |"));
 }
 
+TEST_F(QueryExecutionTest, SerializableNoWaitPreventsDataAnomalies) {
+    execute("create table concurrency_data (id int, name char(8), score float);");
+    execute("create index concurrency_data (id);");
+    execute("insert into concurrency_data values (1, 'xiaohong', 90.0);");
+    txn_manager->commit(txn, log_manager.get());
+    TransactionManager::txn_map.erase(txn_id);
+    delete txn;
+    txn = nullptr;
+
+    auto run_as = [&](const std::string &sql, Context *ctx, txn_id_t *id) {
+        YY_BUFFER_STATE buffer = yy_scan_string(sql.c_str());
+        ast::parse_tree = nullptr;
+        int parse_result = yyparse();
+        if (parse_result != 0 || ast::parse_tree == nullptr) {
+            yy_delete_buffer(buffer);
+            throw InternalError("Unable to parse concurrency test SQL");
+        }
+        auto query = analyze->do_analyze(ast::parse_tree);
+        yy_delete_buffer(buffer);
+        auto plan = optimizer->plan_query(query, ctx);
+        auto stmt = portal->start(plan, ctx);
+        portal->run(stmt, ql_manager.get(), id, ctx);
+    };
+    auto begin_explicit = [&]() {
+        Transaction *result = txn_manager->begin(nullptr, log_manager.get());
+        result->set_txn_mode(true);
+        return result;
+    };
+    auto dispose = [&](Transaction *transaction) {
+        if (transaction == nullptr) return;
+        TransactionManager::txn_map.erase(transaction->get_transaction_id());
+        delete transaction;
+    };
+
+    char send1[BUFFER_LENGTH]{};
+    char send2[BUFFER_LENGTH]{};
+    char send3[BUFFER_LENGTH]{};
+    int offset1 = 0, offset2 = 0, offset3 = 0;
+
+    Transaction *writer = begin_explicit();
+    txn_id_t writer_id = writer->get_transaction_id();
+    Context writer_ctx(lock_manager.get(), log_manager.get(), writer, send1, &offset1);
+    run_as("update concurrency_data set score = 100.0 where id = 1;", &writer_ctx, &writer_id);
+
+    Transaction *other_writer = begin_explicit();
+    txn_id_t other_writer_id = other_writer->get_transaction_id();
+    Context other_writer_ctx(lock_manager.get(), log_manager.get(), other_writer, send2, &offset2);
+    bool dirty_write_aborted = false;
+    try {
+        run_as("update concurrency_data set score = 80.0 where id = 1;", &other_writer_ctx, &other_writer_id);
+    } catch (const TransactionAbortException &) {
+        dirty_write_aborted = true;
+        txn_manager->abort(other_writer, log_manager.get());
+    }
+    EXPECT_TRUE(dirty_write_aborted);
+    EXPECT_EQ(TransactionState::ABORTED, other_writer->get_state());
+
+    Transaction *reader = begin_explicit();
+    txn_id_t reader_id = reader->get_transaction_id();
+    Context reader_ctx(lock_manager.get(), log_manager.get(), reader, send3, &offset3);
+    bool dirty_read_aborted = false;
+    try {
+        run_as("select * from concurrency_data where id = 1;", &reader_ctx, &reader_id);
+    } catch (const TransactionAbortException &) {
+        dirty_read_aborted = true;
+        txn_manager->abort(reader, log_manager.get());
+    }
+    EXPECT_TRUE(dirty_read_aborted);
+    txn_manager->abort(writer, log_manager.get());
+    dispose(writer);
+    dispose(other_writer);
+    dispose(reader);
+
+    Transaction *reader1 = begin_explicit();
+    Transaction *reader2 = begin_explicit();
+    txn_id_t reader1_id = reader1->get_transaction_id();
+    txn_id_t reader2_id = reader2->get_transaction_id();
+    Context reader1_ctx(lock_manager.get(), log_manager.get(), reader1, send1, &offset1);
+    Context reader2_ctx(lock_manager.get(), log_manager.get(), reader2, send2, &offset2);
+    run_as("select * from concurrency_data where id >= 1;", &reader1_ctx, &reader1_id);
+    run_as("select * from concurrency_data where id = 1;", &reader2_ctx, &reader2_id);
+
+    bool phantom_writer_aborted = false;
+    try {
+        run_as("insert into concurrency_data values (2, 'phantom', 95.0);", &reader2_ctx, &reader2_id);
+    } catch (const TransactionAbortException &) {
+        phantom_writer_aborted = true;
+        txn_manager->abort(reader2, log_manager.get());
+    }
+    EXPECT_TRUE(phantom_writer_aborted);
+    run_as("select * from concurrency_data where id >= 1;", &reader1_ctx, &reader1_id);
+    txn_manager->commit(reader1, log_manager.get());
+    dispose(reader1);
+    dispose(reader2);
+
+    txn = txn_manager->begin(nullptr, log_manager.get());
+    txn_id = txn->get_transaction_id();
+    context->txn_ = txn;
+    EXPECT_EQ(1U, consume_select("select * from concurrency_data where id = 1;"));
+    EXPECT_EQ(0U, consume_select("select * from concurrency_data where id = 2;"));
+    execute("select * from concurrency_data where id = 1;");
+    EXPECT_NE(std::string::npos, output().find("| 1 | xiaohong | 90.000000 |"));
+}
+
 TEST_F(QueryExecutionTest, RejectsInvalidSqlAndPersistsMetadata) {
     execute("create table t (id int, name char(4), score float);");
     execute("insert into t values (1, 'Data', 90);");

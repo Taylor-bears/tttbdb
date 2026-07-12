@@ -76,6 +76,9 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
+        if (context_ != nullptr && context_->lock_mgr_ != nullptr) {
+            context_->lock_mgr_->lock_shared_on_table(context_->txn_, fh_->GetFd());
+        }
         if (empty_range_) {
             Iid end = ih_->leaf_end();
             scan_ = std::make_unique<IxScan>(ih_, end, end, sm_manager_->get_bpm());

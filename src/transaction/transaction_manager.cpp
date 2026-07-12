@@ -42,7 +42,8 @@ void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
     if (txn == nullptr) return;
     for (auto *write_record : *txn->get_write_set()) delete write_record;
     txn->get_write_set()->clear();
-    for (const auto &lock_id : *txn->get_lock_set()) lock_manager_->unlock(txn, lock_id);
+    std::vector<LockDataId> locks(txn->get_lock_set()->begin(), txn->get_lock_set()->end());
+    for (const auto &lock_id : locks) lock_manager_->unlock(txn, lock_id);
     txn->get_lock_set()->clear();
     txn->set_state(TransactionState::COMMITTED);
 }
@@ -113,7 +114,8 @@ void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
         }
     }
 
-    for (const auto &lock_id : *txn->get_lock_set()) lock_manager_->unlock(txn, lock_id);
+    std::vector<LockDataId> locks(txn->get_lock_set()->begin(), txn->get_lock_set()->end());
+    for (const auto &lock_id : locks) lock_manager_->unlock(txn, lock_id);
     txn->get_lock_set()->clear();
     txn->set_state(TransactionState::ABORTED);
 }
